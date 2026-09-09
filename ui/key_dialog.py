@@ -7,13 +7,24 @@ from PySide6.QtCore import Qt
 from ui.image_preview import ImagePreview
 
 
+from PySide6.QtGui import QImage, QPixmap
+import numpy as np
+from crypto import generate_phase_mask
+
 class KeyDialog(QDialog):
 
-    def __init__(self, parent=None):
+    def __init__(self, image_shape=None, key1=None, key2=None, parent=None):
         super().__init__(parent)
+        self.image_shape = image_shape
+        self.key1 = key1
+        self.key2 = key2
         self.setWindowTitle("Encryption Keys")
         self.resize(560, 500)
         self.load_ui()
+
+        if self.key1 is not None and self.key2 is not None:
+            self.update_key_previews()
+            self.key_status.setText("Status: Keys ready")
 
     def load_ui(self):
         layout = QVBoxLayout(self)
@@ -81,7 +92,38 @@ class KeyDialog(QDialog):
         return group
 
     def generate_keys(self):
-        raise NotImplementedError
+        if self.image_shape is None:
+            self.key_status.setText("Status: Load an image first")
+            return
+
+        height, width = self.image_shape[:2]
+        key_shape = (height, width)
+        self.key1 = generate_phase_mask(key_shape)
+        self.key2 = generate_phase_mask(key_shape)
+
+        self.update_key_previews()
+        self.key_status.setText(f"Status: Keys ready ({height} x {width})")
+
+        def update_key_previews(self):
+            self.key1_box.image_label.set_image(self.phase_to_pixmap(self.key1))
+            self.key2_box.image_label.set_image(self.phase_to_pixmap(self.key2))
+
+        @staticmethod
+        def phase_to_pixmap(key):
+            """
+            This conversion is only for the UI.
+            """
+            phase = np.angle(key) # -pi to pi
+            preview = ((phase + np.pi) / (2.0 * np.pi) * 255.0).astype(np.uint8)
+            height, width = preview.shape
+            image = QImage(
+                preview.data,
+                width,
+                height,
+                preview.strides[0],
+                QImage.Format_Grayscale8,
+            ).copy()
+            return QPixmap.fromImage(image)
 
     def save_keys(self):
         raise NotImplementedError

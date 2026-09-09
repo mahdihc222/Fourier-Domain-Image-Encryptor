@@ -4,13 +4,17 @@ from PySide6.QtWidgets import (
     QApplication
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
 
 from ui.key_dialog import KeyDialog
 from ui.processing_dialog import ProcessingDialog
 from ui.image_preview import ImagePreview
 from ui.styles import MAIN_STYLESHEET, LIGHT_STYLESHEET
 from image_handler import ContinuousImage
+
+
+from crypto import encrypt
+from PySide6.QtGui import QImage, QPixmap
+import numpy as np
 
 class MainWindow(QMainWindow):
 
@@ -173,8 +177,14 @@ class MainWindow(QMainWindow):
 
     # Dialog launchers
     def open_key_dialog(self):
-        dialog = KeyDialog(self)
+        image_shape = None if self.original_image is None else self.original_image.image.shape
+        dialog = KeyDialog(image_shape, self.key1, self.key2, self)
         dialog.exec()
+
+        # QDialog.Accepted means the user closed the dialog with its Close
+        if dialog.result() == KeyDialog.Accepted:
+            self.key1 = dialog.key1
+            self.key2 = dialog.key2
 
     def open_processing_dialog(self):
         dialog = ProcessingDialog(self)
@@ -209,7 +219,61 @@ class MainWindow(QMainWindow):
         self.original_image = ContinuousImage(file_path)
 
     def encrypt(self):
-        raise NotImplementedError
+        if self.original_image is None:
+            QMessageBox.warning(self, "Cannot encrypt", "Load an image first.")
+            return
+
+        if self.key1 is None or self.key2 is None:
+            QMessageBox.warning(
+                self,
+                "Cannot encrypt",
+                "Generate encryption keys first.",
+            )
+            return
+
+        try:
+            self.encrypted_image = encrypt(
+                self.original_image.image,
+                self.key1,
+                self.key2,
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Cannot encrypt", str(error))
+            return
+
+        preview = self.ciphertext_to_pixmap(self.encrypted_image)
+        self.encrypted_image_box.image_label.set_image(preview)
+
+    @staticmethod
+    def ciphertext_to_pixmap_rgb(ciphertext):
+        magnitude = np.abs(np.asarray(ciphertext))
+
+        maximum = np.max(magnitude)
+        if maximum > 0:
+            magnitude /= maximum
+
+        preview = np.clip(magnitude * 255.0, 0.0, 255.0).astype(np.uint8)
+
+        if preview.ndim == 3 and preview.shape[2] == 3:
+            height, width, _ = preview.shape
+            image = QImage(
+                preview.data,
+                width,
+                height,
+                preview.strides[0],
+                QImage.Format_RGB888,
+            ).copy()
+        else:
+            height, width = preview.shape[:2]
+            image = QImage(
+                preview.data,
+                width,
+                height,
+                preview.strides[0],
+                QImage.Format_Grayscale8,
+            ).copy()
+
+        return QPixmap.fromImage(image)
 
     def save_cipher(self):
         raise NotImplementedError
