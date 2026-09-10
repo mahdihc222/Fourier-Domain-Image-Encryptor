@@ -12,7 +12,7 @@ from ui.styles import MAIN_STYLESHEET, LIGHT_STYLESHEET
 from image_handler import ContinuousImage
 
 
-from crypto import encrypt
+from crypto import encrypt, save_cipher
 from PySide6.QtGui import QImage, QPixmap
 import numpy as np
 
@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot encrypt", str(error))
             return
 
-        preview = self.ciphertext_to_pixmap(self.encrypted_image)
+        preview = self.ciphertext_to_pixmap_rgb(self.encrypted_image)
         self.encrypted_image_box.image_label.set_image(preview)
 
     @staticmethod
@@ -276,7 +276,35 @@ class MainWindow(QMainWindow):
         return QPixmap.fromImage(image)
 
     def save_cipher(self):
-        raise NotImplementedError
+        if self.encrypted_image is None or isinstance(self.encrypted_image, str):
+            QMessageBox.warning(
+                self,
+                "Cannot save cipher",
+                "Encrypt an image first.",
+            )
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Encrypted Cipher",
+            "cipher.npz",
+            "NumPy archives (*.npz)",
+        )
+        if not file_path:
+            return
+
+        try:
+            save_cipher(file_path, self.encrypted_image)
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Could not save cipher", str(error))
+            return
+
+        QMessageBox.information(
+            self,
+            "Cipher saved",
+            f"Encrypted data saved to:\n{file_path}",
+        )
+
 
     def load_cipher(self):
         file_path, _ = QFileDialog.getOpenFileName(
