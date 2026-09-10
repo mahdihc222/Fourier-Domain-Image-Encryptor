@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
-    QSizePolicy
+    QSizePolicy, QFileDialog, QMessageBox
 )
 from PySide6.QtCore import Qt
 
@@ -9,7 +9,7 @@ from ui.image_preview import ImagePreview
 
 from PySide6.QtGui import QImage, QPixmap
 import numpy as np
-from crypto import generate_phase_mask
+from crypto import generate_phase_mask, save_keys as save_key_file, load_keys as load_key_file
 
 class KeyDialog(QDialog):
 
@@ -84,7 +84,7 @@ class KeyDialog(QDialog):
         layout.setContentsMargins(4, 8, 4, 4)
 
         image_label = ImagePreview("No Key")
-        image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        image_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         image_label.setMinimumSize(0, 0)
 
         layout.addWidget(image_label)
@@ -104,29 +104,76 @@ class KeyDialog(QDialog):
         self.update_key_previews()
         self.key_status.setText(f"Status: Keys ready ({height} x {width})")
 
-        def update_key_previews(self):
-            self.key1_box.image_label.set_image(self.phase_to_pixmap(self.key1))
-            self.key2_box.image_label.set_image(self.phase_to_pixmap(self.key2))
+    def update_key_previews(self):
+        self.key1_box.image_label.set_image(self.phase_to_pixmap(self.key1))
+        self.key2_box.image_label.set_image(self.phase_to_pixmap(self.key2))
 
-        @staticmethod
-        def phase_to_pixmap(key):
-            """
-            This conversion is only for the UI.
-            """
-            phase = np.angle(key) # -pi to pi
-            preview = ((phase + np.pi) / (2.0 * np.pi) * 255.0).astype(np.uint8)
-            height, width = preview.shape
-            image = QImage(
-                preview.data,
-                width,
-                height,
-                preview.strides[0],
-                QImage.Format_Grayscale8,
-            ).copy()
-            return QPixmap.fromImage(image)
+    @staticmethod
+    def phase_to_pixmap(key):
+        """
+        This conversion is only for the UI.
+        """
+        phase = np.angle(key) # -pi to pi
+        preview = ((phase + np.pi) / (2.0 * np.pi) * 255.0).astype(np.uint8)
+        height, width = preview.shape
+        image = QImage(
+            preview.data,
+            width,
+            height,
+            preview.strides[0],
+            QImage.Format_Grayscale8,
+        ).copy()
+        return QPixmap.fromImage(image)
 
     def save_keys(self):
-        raise NotImplementedError
+        if self.key1 is None or self.key2 is None:
+            self.key_status.setText("Status: Generate keys first")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Encryption Keys",
+            "keys.npz",
+            "NumPy archives (*.npz)",
+        )
+        if not file_path:
+            return
+
+        try:
+            save_key_file(file_path, self.key1, self.key2)
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Could not save keys", str(error))
+            return
+
+        self.key_status.setText(f"Status: Keys saved to {file_path}")
 
     def load_keys(self):
-        raise NotImplementedError
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Encryption Keys",
+            "",
+            "NumPy archives (*.npz)",
+        )
+        if not file_path:
+            return
+
+        try:
+            key1, key2 = load_key_file(file_path)
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Could not load keys", str(error))
+            return
+
+        if self.image_shape is not None:
+            expected_shape = tuple(self.image_shape[:2])
+            if key1.shape != expected_shape:
+                QMessageBox.warning(
+                    self,
+                    "Incompatible keys",
+                    "The loaded keys do not match the loaded image dimensions.",
+                )
+                return
+
+        self.key1 = key1
+        self.key2 = key2
+        self.update_key_previews()
+        self.key_status.setText(f"Status: Keys loaded from {file_path}")
