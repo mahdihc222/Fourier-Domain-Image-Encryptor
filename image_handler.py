@@ -21,10 +21,6 @@ class ContinuousImage:
             image /= np.iinfo(raw_image.dtype).max
         self.image = np.clip(image, 0.0, 1.0)
 
-        # Continuous spatial coordinate vectors, both spanning [-1, 1]
-        self.x = np.linspace(-1, 1, self.image.shape[1])
-        self.y = np.linspace(-1, 1, self.image.shape[0])
-
     def showImagePlot(self, title="Image"):
         plt.imshow(self.image)
         plt.title(title)

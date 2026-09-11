@@ -49,7 +49,7 @@ class KeyDialog(QDialog):
         key_row.addWidget(self.key2_box, 1)
         layout.addLayout(key_row, 1)
 
-        self.generate_keys_button = QPushButton("✨  Generate New Keys")
+        self.generate_keys_button = QPushButton("Generate New Keys")
         self.generate_keys_button.setObjectName("primaryAction")
         self.generate_keys_button.clicked.connect(self.generate_keys)
         layout.addWidget(self.generate_keys_button)

@@ -12,7 +12,7 @@ from ui.styles import MAIN_STYLESHEET, LIGHT_STYLESHEET
 from image_handler import ContinuousImage
 
 
-from crypto import encrypt, save_cipher
+from crypto import encrypt, decrypt, save_cipher, load_cipher
 from PySide6.QtGui import QImage, QPixmap
 import numpy as np
 
@@ -23,21 +23,23 @@ class MainWindow(QMainWindow):
 
         self.original_image = None
         self.encrypted_image = None
+        self.cipher_input = None
         self.recovered_image = None
         self.key1 = None
         self.key2 = None
         self.dark_theme_enabled = True
 
         self.setWindowTitle("Fourier-Domain Image Encryption")
-        self.resize(1100, 780)
+        self.resize(1120, 820)
+        self.setMinimumSize(900, 700)
         self.load_ui()
 
     def load_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(10, 8, 10, 8)
-        main_layout.setSpacing(3)
+        main_layout.setContentsMargins(28, 24, 28, 24)
+        main_layout.setSpacing(20)
 
         main_layout.addLayout(self.build_header())
         main_layout.addWidget(self.build_encryption_group(), 1)
@@ -49,10 +51,10 @@ class MainWindow(QMainWindow):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        title = QLabel("Fourier-Domain Image Encryptor")
+        title = QLabel("Image Encryptor")
         title.setObjectName("appTitle")
 
-        subtitle = QLabel("Double Random Phase Encoding")
+        subtitle = QLabel("Fourier-domain encryption / Double Random Phase Encoding")
         subtitle.setObjectName("appSubtitle")
 
         title_box.addWidget(title)
@@ -62,12 +64,12 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
 
         button_box = QHBoxLayout()
-        button_box.setSpacing(4)
+        button_box.setSpacing(8)
         self.keys_button = QPushButton("Encryption Keys")
         self.keys_button.setObjectName("headerAction")
         self.keys_button.clicked.connect(self.open_key_dialog)
 
-        self.processing_button = QPushButton("Processing")
+        self.processing_button = QPushButton("How it works")
         self.processing_button.setObjectName("headerAction")
         self.processing_button.clicked.connect(self.open_processing_dialog)
 
@@ -83,108 +85,119 @@ class MainWindow(QMainWindow):
         return header_layout
 
     def build_encryption_group(self):
-        group = QGroupBox("ENCRYPTION")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(1)
-        # layout.setContentsMargins(3, 3, 3, 3)
-
-        row = QHBoxLayout()
-        row.setSpacing(8)
-
-        original_column = QVBoxLayout()
-        self.original_image_box = self.create_image_box("Original Image")
-        self.load_image_button = QPushButton("Load Image")
-        self.load_image_button.clicked.connect(self.load_image)
-        original_column.addWidget(self.original_image_box, 1)
-        original_column.addWidget(self.load_image_button, alignment=Qt.AlignCenter)
-
-        encrypt_column = QVBoxLayout()
-        encrypt_column.addStretch()
-        self.encrypt_button = QPushButton("ENCRYPT")
-        self.encrypt_button.setObjectName("primaryAction")
-        self.encrypt_button.setMinimumSize(120, 44)
-        self.encrypt_button.clicked.connect(self.encrypt)
-        encrypt_column.addWidget(self.encrypt_button)
-        encrypt_column.addStretch()
-
-        encrypted_column = QVBoxLayout()
-        self.encrypted_image_box = self.create_image_box("Encrypted Image")
-        self.save_cipher_button = QPushButton("Save Cipher")
-        self.save_cipher_button.clicked.connect(self.save_cipher)
-        encrypted_column.addWidget(self.encrypted_image_box, 1)
-        encrypted_column.addWidget(self.save_cipher_button, alignment=Qt.AlignCenter)
-
-        row.addLayout(original_column, 1)
-        row.addLayout(encrypt_column)
-        row.addLayout(encrypted_column, 1)
-
-        layout.addLayout(row, 1)
-
+        group, row = self.create_workflow_card("Encrypt an image")
+        self.original_image_box = self.create_image_box(
+            "Original image", "Start with an image\nPNG, JPG, BMP or WebP"
+        )
+        self.encrypted_image_box = self.create_image_box(
+            "Encrypted result", "Your encrypted preview\nwill appear here"
+        )
+        self.load_image_button = self.create_button("Load image", self.load_image)
+        self.save_cipher_button = self.create_button("Save cipher", self.save_cipher)
+        self.encrypt_button = self.create_button("Encrypt", self.encrypt, primary=True)
+        self.populate_workflow(row, self.original_image_box, self.load_image_button,
+                               self.encrypt_button, self.encrypted_image_box,
+                               self.save_cipher_button,
+                               "Set phase keys.", "Save your cipher.")
         return group
 
     def build_decryption_group(self):
-        group = QGroupBox("DECRYPTION")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(6)
-        layout.setContentsMargins(6, 10, 6, 6)
-
-        row = QHBoxLayout()
-        row.setSpacing(8)
-
-        cipher_column = QVBoxLayout()
-        self.cipher_input_box = self.create_image_box("Encrypted Image")
-        self.load_cipher_button = QPushButton("Load Cipher")
-        self.load_cipher_button.clicked.connect(self.load_cipher)
-        cipher_column.addWidget(self.cipher_input_box, 1)
-        cipher_column.addWidget(self.load_cipher_button, alignment=Qt.AlignCenter)
-
-        decrypt_column = QVBoxLayout()
-        decrypt_column.addStretch()
-        self.decrypt_button = QPushButton("DECRYPT")
-        self.decrypt_button.setObjectName("primaryAction")
-        self.decrypt_button.setMinimumSize(120, 44)
-        self.decrypt_button.clicked.connect(self.decrypt)
-        decrypt_column.addWidget(self.decrypt_button)
-        decrypt_column.addStretch()
-
-        recovered_column = QVBoxLayout()
-        self.recovered_image_box = self.create_image_box("Recovered Image")
-        self.save_recovered_button = QPushButton("Save Recovered Image")
-        self.save_recovered_button.clicked.connect(self.save_recovered)
-        recovered_column.addWidget(self.recovered_image_box, 1)
-        recovered_column.addWidget(self.save_recovered_button, alignment=Qt.AlignCenter)
-
-        row.addLayout(cipher_column, 1)
-        row.addLayout(decrypt_column)
-        row.addLayout(recovered_column, 1)
-
-        layout.addLayout(row, 1)
-
+        group, row = self.create_workflow_card("Recover an image")
+        self.cipher_input_box = self.create_image_box(
+            "Cipher input", "Load a saved cipher\nto recover its image"
+        )
+        self.recovered_image_box = self.create_image_box(
+            "Recovered image", "Your recovered image\nwill appear here"
+        )
+        self.load_cipher_button = self.create_button("Load cipher", self.load_cipher)
+        self.save_recovered_button = self.create_button("Save image", self.save_recovered)
+        self.decrypt_button = self.create_button("Decrypt", self.decrypt, primary=True)
+        self.populate_workflow(row, self.cipher_input_box, self.load_cipher_button,
+                               self.decrypt_button, self.recovered_image_box,
+                               self.save_recovered_button,
+                               "Use original keys.", "Save your image.")
         return group
 
-    def create_image_box(self, title, placeholder_text="No Image"):
-        group = QGroupBox(title)
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(4, 8, 4, 4)
+    @staticmethod
+    def create_button(text, handler, primary=False):
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(handler)
+        if primary:
+            button.setObjectName("primaryAction")
+            button.setFixedWidth(132)
+        return button
 
+    @staticmethod
+    def create_workflow_card(title):
+        card = QFrame()
+        card.setObjectName("workflowCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 10, 20, 12)
+        layout.setSpacing(6)
+        heading = QHBoxLayout()
+        heading.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(3)
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        text.addWidget(title_label)
+        heading.addLayout(text)
+        heading.addStretch()
+        layout.addLayout(heading)
+        row = QHBoxLayout()
+        row.setSpacing(20)
+        layout.addLayout(row, 1)
+        return card, row
+
+    @staticmethod
+    def populate_workflow(row, input_box, load_button, action, output_box, save_button,
+                          input_hint, output_hint):
+        for box, button, hint in ((input_box, load_button, input_hint),
+                                  (output_box, save_button, output_hint)):
+            column = QVBoxLayout()
+            column.setSpacing(6)
+            column.addWidget(box, 1)
+            footer = QHBoxLayout()
+            footer.setSpacing(10)
+            description = QLabel(hint)
+            description.setObjectName("appSubtitle")
+            description.setWordWrap(True)
+            description.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            # Equal side widths keep the button centered beneath its preview.
+            footer.addWidget(description, 1)
+            footer.addWidget(button, 0, Qt.AlignVCenter)
+            footer.addWidget(QWidget(), 1)
+            column.addLayout(footer)
+            if box is output_box:
+                row.addWidget(action, 0, Qt.AlignVCenter)
+            row.addLayout(column, 1)
+
+    def create_image_box(self, title, placeholder_text="No image"):
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        label = QLabel(title)
+        label.setObjectName("previewTitle")
+        layout.addWidget(label)
         image_label = ImagePreview(placeholder_text)
         image_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        image_label.setMinimumSize(0, 0)
-
-        layout.addWidget(image_label)
+        layout.addWidget(image_label, 1)
         group.image_label = image_label
         return group
 
-    # Dialog launchers
     def open_key_dialog(self):
         image_shape = None if self.original_image is None else self.original_image.image.shape
+        if self.cipher_input is not None:
+            image_shape = self.cipher_input.shape
         dialog = KeyDialog(image_shape, self.key1, self.key2, self)
         dialog.exec()
 
-        # QDialog.Accepted means the user closed the dialog with its Close
         if dialog.result() == KeyDialog.Accepted:
             self.key1 = dialog.key1
             self.key2 = dialog.key2
+            self.clear_recovered()
 
     def open_processing_dialog(self):
         dialog = ProcessingDialog(self)
@@ -201,7 +214,6 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(LIGHT_STYLESHEET)
             self.theme_button.setText("Dark Theme")
 
-    # Action handlers
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Image", "",
@@ -217,6 +229,8 @@ class MainWindow(QMainWindow):
 
         self.original_image_box.image_label.set_image(pixmap)
         self.original_image = ContinuousImage(file_path)
+        self.encrypted_image = None
+        self.encrypted_image_box.image_label.clear_image()
 
     def encrypt(self):
         if self.original_image is None:
@@ -252,7 +266,13 @@ class MainWindow(QMainWindow):
         if maximum > 0:
             magnitude /= maximum
 
-        preview = np.clip(magnitude * 255.0, 0.0, 255.0).astype(np.uint8)
+        return MainWindow.image_to_pixmap(magnitude)
+
+    @staticmethod
+    def image_to_pixmap(pixels):
+        preview = np.ascontiguousarray(
+            np.rint(np.clip(pixels, 0.0, 1.0) * 255.0).astype(np.uint8)
+        )
 
         if preview.ndim == 3 and preview.shape[2] == 3:
             height, width, _ = preview.shape
@@ -308,22 +328,55 @@ class MainWindow(QMainWindow):
 
     def load_cipher(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Encrypted Image", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
+            self, "Select Encrypted Cipher", "",
+            "NumPy archives (*.npz)"
         )
         if not file_path:
             return
 
-        pixmap = QPixmap(file_path)
-        if pixmap.isNull():
-            QMessageBox.warning(self, "Error", "Could not load the image.")
+        try:
+            ciphertext = load_cipher(file_path)
+        except (OSError, ValueError, EOFError) as error:
+            QMessageBox.warning(self, "Could not load cipher", str(error))
             return
 
-        self.cipher_input_box.image_label.set_image(pixmap)
-        self.encrypted_image = file_path
+        self.cipher_input = ciphertext
+        self.cipher_input_box.image_label.set_image(
+            self.ciphertext_to_pixmap_rgb(ciphertext)
+        )
+        self.clear_recovered()
+
+    def clear_recovered(self):
+        self.recovered_image = None
+        self.recovered_image_box.image_label.clear_image()
 
     def decrypt(self):
-        raise NotImplementedError
+        self.clear_recovered()
+        if self.cipher_input is None:
+            QMessageBox.warning(self, "Cannot decrypt", "Load a saved cipher first.")
+            return
+        if self.key1 is None or self.key2 is None:
+            QMessageBox.warning(self, "Cannot decrypt", "Load the original encryption keys first.")
+            return
+        try:
+            self.recovered_image = decrypt(self.cipher_input, self.key1, self.key2)
+        except ValueError as error:
+            QMessageBox.warning(self, "Cannot decrypt", str(error))
+            return
+        self.recovered_image_box.image_label.set_image(
+            self.image_to_pixmap(self.recovered_image)
+        )
 
     def save_recovered(self):
-        raise NotImplementedError
+        if self.recovered_image is None:
+            QMessageBox.warning(self, "Cannot save image", "Decrypt a cipher first.")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Recovered Image", "recovered.png", "PNG images (*.png)"
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".png"):
+            file_path += ".png"
+        if not self.image_to_pixmap(self.recovered_image).save(file_path, "PNG"):
+            QMessageBox.critical(self, "Could not save image", "Failed to write the PNG file.")

@@ -19,6 +19,7 @@ class ImagePreview(QLabel):
         self.setObjectName("imagePreview")
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(0, 0)
+        self.setWordWrap(True)
         self.setText(self._placeholder_text)
 
     def set_image(self, source):
@@ -41,14 +42,14 @@ class ImagePreview(QLabel):
 
     def clear_image(self):
         self._pixmap = None
-        self.setText(self._placeholder_text)
         self.setPixmap(QPixmap())
+        self.setText(self._placeholder_text)
 
     def _update_scaled_pixmap(self):
         if self._pixmap is None:
             return
         scaled = self._pixmap.scaled(
-            self.size(),
+            self.contentsRect().size(),
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation
         )
