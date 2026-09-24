@@ -6,6 +6,7 @@ returned through the inverse operations during decryption. The implementation
 keeps the original image shape and supports grayscale or RGB arrays.
 """
 import hashlib
+import ast
 from functools import lru_cache
 import numpy as np
 from PIL import Image, PngImagePlugin
@@ -124,11 +125,22 @@ def encrypt(image, arnold_iterations=3, diffusion_key="image-encryptor"):
     original = _validate(image)
     scrambled = arnold_map(original, arnold_iterations)
     coefficients = _dct2(scrambled)
-    minimum, maximum = float(coefficients.min()), float(coefficients.max())
-    scale = maximum - minimum or 1.0
-    normalized = np.rint(np.clip((coefficients - minimum) / scale, 0.0, 1.0) * 65535).astype(np.uint16)
+    if coefficients.ndim == 3:
+        minimum = coefficients.min(axis=(0, 1))
+        scale = coefficients.max(axis=(0, 1)) - minimum
+        scale = np.where(scale == 0.0, 1.0, scale)
+        normalized_values = (coefficients - minimum.reshape(1, 1, -1)) / scale.reshape(1, 1, -1)
+        metadata_minimum = minimum.tolist()
+        metadata_scale = scale.tolist()
+    else:
+        minimum, maximum = float(coefficients.min()), float(coefficients.max())
+        scale = maximum - minimum or 1.0
+        normalized_values = (coefficients - minimum) / scale
+        metadata_minimum = minimum
+        metadata_scale = scale
+    normalized = np.rint(np.clip(normalized_values, 0.0, 1.0) * 65535).astype(np.uint16)
     diffused = np.bitwise_xor(normalized, _keystream(normalized.shape, diffusion_key))
-    return diffused.astype(np.float64) / 65535.0, {"minimum": minimum, "scale": scale, "shape": original.shape}
+    return diffused.astype(np.float64) / 65535.0, {"minimum": metadata_minimum, "scale": metadata_scale, "shape": original.shape}
 
 
 def decrypt(ciphertext, metadata, arnold_iterations=3, diffusion_key="image-encryptor"):
@@ -136,10 +148,17 @@ def decrypt(ciphertext, metadata, arnold_iterations=3, diffusion_key="image-encr
     encrypted = _validate(ciphertext)
     bytes_data = np.rint(encrypted * 65535.0).astype(np.uint16)
     coefficients = np.bitwise_xor(bytes_data, _keystream(bytes_data.shape, diffusion_key)).astype(np.float64) / 65535.0
-    coefficients = coefficients * metadata["scale"] + metadata["minimum"]
+    scale = np.asarray(metadata["scale"], dtype=np.float64)
+    minimum = np.asarray(metadata["minimum"], dtype=np.float64)
+    if coefficients.ndim == 3:
+        scale = scale.reshape(1, 1, -1)
+        minimum = minimum.reshape(1, 1, -1)
+    coefficients = coefficients * scale + minimum
     restored = inverse_arnold_map(_idct2(coefficients), arnold_iterations)
     shape = tuple(metadata["shape"])
-    return np.clip(restored[:shape[0], :shape[1]], 0.0, 1.0)
+    recovered = np.clip(restored[:shape[0], :shape[1]], 0.0, 1.0)
+    recovered[np.abs(recovered) < 1e-3] = 0.0
+    return recovered
 
 
 def encryption_steps(image, arnold_iterations=3, diffusion_key="image-encryptor"):
@@ -180,7 +199,7 @@ def load_cipher_png(path):
     required = ("arnold_minimum", "arnold_scale", "arnold_shape")
     if not all(key in image.text for key in required):
         raise ValueError("PNG is missing Arnold ciphertext metadata")
-    metadata = {"minimum": float(image.text["arnold_minimum"]), "scale": float(image.text["arnold_scale"]), "shape": tuple(int(value) for value in image.text["arnold_shape"].split(","))}
+    metadata = {"minimum": ast.literal_eval(image.text["arnold_minimum"]), "scale": ast.literal_eval(image.text["arnold_scale"]), "shape": tuple(int(value) for value in image.text["arnold_shape"].split(","))}
     shape = metadata["shape"]
     pixels = np.asarray(image, dtype=np.float64) / 65535.0
     if len(shape) == 3:
