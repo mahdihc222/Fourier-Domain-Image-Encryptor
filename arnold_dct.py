@@ -6,6 +6,7 @@ returned through the inverse operations during decryption. The implementation
 keeps the original image shape and supports grayscale or RGB arrays.
 """
 import hashlib
+from functools import lru_cache
 import numpy as np
 from PIL import Image, PngImagePlugin
 
@@ -21,18 +22,30 @@ def _validate(image):
 
 def _arnold_once(image):
     result = image.copy()
-    side = min(image.shape[:2])
-    source = image[:side, :side]
-    for row in range(side):
-        for column in range(side):
-            new_row = (row + column) % side
-            new_column = (row + 2 * column) % side
-            result[new_row, new_column] = source[row, column]
+    for row_start, column_start, side in _square_tiles(image.shape[0], image.shape[1]):
+        source = image[row_start:row_start + side, column_start:column_start + side]
+        rows, columns = np.indices((side, side))
+        new_rows = (rows + columns) % side
+        new_columns = (rows + 2 * columns) % side
+        result[row_start + new_rows, column_start + new_columns] = source
     return result
 
 
+def _square_tiles(height, width):
+    """Yield a complete square tiling, including both-dimensional remainders."""
+    pending = [(0, 0, height, width)]
+    while pending:
+        row_start, column_start, region_height, region_width = pending.pop()
+        side = min(region_height, region_width)
+        yield row_start, column_start, side
+        if region_width > side:
+            pending.append((row_start, column_start + side, region_height, region_width - side))
+        if region_height > side:
+            pending.append((row_start + side, column_start, region_height - side, side))
+
+
 def arnold_map(image, iterations=1):
-    """Apply the Arnold cat map to the largest square image region."""
+    """Apply the Arnold cat map to square tiles covering the full image."""
     result = _validate(image)
     for _ in range(int(iterations) % _arnold_period(result.shape[0], result.shape[1])):
         result = _arnold_once(result)
@@ -41,26 +54,37 @@ def arnold_map(image, iterations=1):
 
 def inverse_arnold_map(image, iterations=1):
     """Reverse :func:`arnold_map` using the inverse coordinate mapping."""
-    result = _validate(image)
-    side = min(result.shape[:2])
+    result = np.asarray(image, dtype=np.float64)
+    if result.ndim not in (2, 3) or (result.ndim == 3 and result.shape[2] != 3):
+        raise ValueError("image must be grayscale or 3-channel RGB")
+    if result.size == 0 or not np.all(np.isfinite(result)):
+        raise ValueError("image must be nonempty and finite")
     for _ in range(int(iterations) % _arnold_period(result.shape[0], result.shape[1])):
         restored = result.copy()
-        for row in range(side):
-            for column in range(side):
-                old_row = (2 * row - column) % side
-                old_column = (-row + column) % side
-                restored[old_row, old_column] = result[row, column]
+        for row_start, column_start, side in _square_tiles(result.shape[0], result.shape[1]):
+            rows, columns = np.indices((side, side))
+            old_rows = (2 * rows - columns) % side
+            old_columns = (-rows + columns) % side
+            restored[row_start + old_rows, column_start + old_columns] = result[row_start + rows, column_start + columns]
         result = restored
     return result
 
 
+@lru_cache(maxsize=None)
 def _arnold_period(height, width):
     side = min(height, width)
-    probe = np.arange(side * side).reshape(side, side)
-    current = probe.copy()
+    first_row, first_column = 1 % side, 0
+    second_row, second_column = 0, 1 % side
     for period in range(1, side * side * 2 + 1):
-        current = _arnold_once(current)
-        if np.array_equal(current, probe):
+        first_row, first_column = (
+            (first_row + first_column) % side,
+            (first_row + 2 * first_column) % side,
+        )
+        second_row, second_column = (
+            (second_row + second_column) % side,
+            (second_row + 2 * second_column) % side,
+        )
+        if (first_row, first_column) == (1 % side, 0) and (second_row, second_column) == (0, 1 % side):
             return period
     return side * side
 
@@ -92,7 +116,7 @@ def _idct2(image):
 def _keystream(shape, key):
     seed = hashlib.sha256(str(key).encode("utf-8")).digest()
     seed_value = int.from_bytes(seed[:8], "little")
-    return np.random.default_rng(seed_value).integers(0, 256, size=shape, dtype=np.uint8)
+    return np.random.default_rng(seed_value).integers(0, 65536, size=shape, dtype=np.uint16)
 
 
 def encrypt(image, arnold_iterations=3, diffusion_key="image-encryptor"):
@@ -102,16 +126,16 @@ def encrypt(image, arnold_iterations=3, diffusion_key="image-encryptor"):
     coefficients = _dct2(scrambled)
     minimum, maximum = float(coefficients.min()), float(coefficients.max())
     scale = maximum - minimum or 1.0
-    normalized = np.rint(np.clip((coefficients - minimum) / scale, 0.0, 1.0) * 255).astype(np.uint8)
+    normalized = np.rint(np.clip((coefficients - minimum) / scale, 0.0, 1.0) * 65535).astype(np.uint16)
     diffused = np.bitwise_xor(normalized, _keystream(normalized.shape, diffusion_key))
-    return diffused.astype(np.float64) / 255.0, {"minimum": minimum, "scale": scale, "shape": original.shape}
+    return diffused.astype(np.float64) / 65535.0, {"minimum": minimum, "scale": scale, "shape": original.shape}
 
 
 def decrypt(ciphertext, metadata, arnold_iterations=3, diffusion_key="image-encryptor"):
     """Reverse diffusion -> IDCT -> inverse Arnold using encryption metadata."""
     encrypted = _validate(ciphertext)
-    bytes_data = np.rint(encrypted * 255.0).astype(np.uint8)
-    coefficients = np.bitwise_xor(bytes_data, _keystream(bytes_data.shape, diffusion_key)).astype(np.float64) / 255.0
+    bytes_data = np.rint(encrypted * 65535.0).astype(np.uint16)
+    coefficients = np.bitwise_xor(bytes_data, _keystream(bytes_data.shape, diffusion_key)).astype(np.float64) / 65535.0
     coefficients = coefficients * metadata["scale"] + metadata["minimum"]
     restored = inverse_arnold_map(_idct2(coefficients), arnold_iterations)
     shape = tuple(metadata["shape"])
@@ -124,14 +148,14 @@ def encryption_steps(image, arnold_iterations=3, diffusion_key="image-encryptor"
     scrambled = arnold_map(original, arnold_iterations)
     coefficients = _dct2(scrambled)
     encrypted, metadata = encrypt(original, arnold_iterations, diffusion_key)
-    return [("Original", original), ("Arnold cat map", scrambled), ("DCT coefficients", np.abs(coefficients)), ("Diffusion", encrypted)], metadata
+    return [("Original", original), ("Arnold cat map", scrambled), ("DCT coefficients", np.log1p(np.abs(coefficients))), ("Diffusion", encrypted)], metadata
 
 
 def decryption_steps(ciphertext, metadata, arnold_iterations=3, diffusion_key="image-encryptor"):
     """Return named intermediate arrays for the decryption step viewer."""
     encrypted = _validate(ciphertext)
-    bytes_data = np.rint(encrypted * 255.0).astype(np.uint8)
-    coefficients = np.bitwise_xor(bytes_data, _keystream(bytes_data.shape, diffusion_key)).astype(np.float64) / 255.0
+    bytes_data = np.rint(encrypted * 65535.0).astype(np.uint16)
+    coefficients = np.bitwise_xor(bytes_data, _keystream(bytes_data.shape, diffusion_key)).astype(np.float64) / 65535.0
     coefficients = coefficients * metadata["scale"] + metadata["minimum"]
     idct = _idct2(coefficients)
     restored = inverse_arnold_map(idct, arnold_iterations)
@@ -140,12 +164,14 @@ def decryption_steps(ciphertext, metadata, arnold_iterations=3, diffusion_key="i
 
 def save_cipher_png(path, ciphertext, metadata):
     """Store an Arnold ciphertext and its reversible scale metadata as PNG."""
-    pixels = np.rint(np.clip(ciphertext, 0.0, 1.0) * 255.0).astype(np.uint8)
+    pixels = np.rint(np.clip(ciphertext, 0.0, 1.0) * 65535.0).astype(np.uint16)
+    shape = tuple(metadata["shape"])
+    encoded = pixels if len(shape) == 2 else pixels.reshape(shape[0], shape[1] * shape[2])
     info = PngImagePlugin.PngInfo()
     info.add_text("arnold_minimum", repr(metadata["minimum"]))
     info.add_text("arnold_scale", repr(metadata["scale"]))
-    info.add_text("arnold_shape", ",".join(str(value) for value in metadata["shape"]))
-    Image.fromarray(pixels if pixels.ndim == 2 else pixels, mode="L" if pixels.ndim == 2 else "RGB").save(path, pnginfo=info)
+    info.add_text("arnold_shape", ",".join(str(value) for value in shape))
+    Image.fromarray(encoded, mode="I;16").save(path, pnginfo=info)
 
 
 def load_cipher_png(path):
@@ -154,6 +180,9 @@ def load_cipher_png(path):
     required = ("arnold_minimum", "arnold_scale", "arnold_shape")
     if not all(key in image.text for key in required):
         raise ValueError("PNG is missing Arnold ciphertext metadata")
-    pixels = np.asarray(image.convert("RGB" if image.mode == "RGB" else "L"), dtype=np.float64) / 255.0
     metadata = {"minimum": float(image.text["arnold_minimum"]), "scale": float(image.text["arnold_scale"]), "shape": tuple(int(value) for value in image.text["arnold_shape"].split(","))}
+    shape = metadata["shape"]
+    pixels = np.asarray(image, dtype=np.float64) / 65535.0
+    if len(shape) == 3:
+        pixels = pixels.reshape(shape)
     return pixels, metadata
