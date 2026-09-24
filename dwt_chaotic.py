@@ -1,5 +1,3 @@
-"""Multilevel Haar DWT encryption with logistic-map-based coefficient permutation."""
-
 import hashlib
 
 import numpy as np
@@ -7,7 +5,6 @@ from PIL import Image, PngImagePlugin
 
 
 class DWTCiphertext(np.ndarray):
-    """NumPy subclass carrying reversible DWT metadata along with the ciphertext."""
 
     def __new__(cls, values, metadata=None):
         obj = np.asarray(values, dtype=np.float64).view(cls)
@@ -21,7 +18,6 @@ class DWTCiphertext(np.ndarray):
 
 
 def haar_dwt2(image):
-    """Compute a single-level 2D Haar DWT with LL, LH, HL, HH layout."""
     array = _validate_image_array(image)
     padded = _pad_to_even(array)
     if padded.ndim == 2:
@@ -43,7 +39,6 @@ def haar_dwt2(image):
 
 
 def haar_idwt2(ll, lh, hl, hh):
-    """Invert a single-level 2D Haar DWT using the exact pair reconstruction rule."""
     ll = np.asarray(ll, dtype=np.float64)
     lh = np.asarray(lh, dtype=np.float64)
     hl = np.asarray(hl, dtype=np.float64)
@@ -66,7 +61,6 @@ def haar_idwt2(ll, lh, hl, hh):
 
 
 def encrypt(image, key):
-    """Apply a two-level Haar DWT and store the packed, permuted coefficient vector as ciphertext."""
     image_array = _validate_image_array(image)
     original_shape = tuple(image_array.shape)
     padded = _pad_to_even(image_array)
@@ -77,7 +71,20 @@ def encrypt(image, key):
 
     coeffs = _pack_coefficients(ll2, lh2, hl2, hh2, lh1, hl1, hh1)
     permutation = _logistic_permutation(coeffs.size, key, "dwt-coefficients")
-    encrypted_data = coeffs[permutation]
+    encrypted_coefficients = coeffs[permutation]
+    coefficient_low = float(np.min(encrypted_coefficients))
+    coefficient_high = float(np.max(encrypted_coefficients))
+    if coefficient_high == coefficient_low:
+        coefficient_high = coefficient_low + 1.0
+    normalized = np.clip(
+        (encrypted_coefficients - coefficient_low) / (coefficient_high - coefficient_low),
+        0.0,
+        1.0,
+    )
+    encoded = _encode_rgb_coefficients(normalized)
+    rows, columns = _cipher_shape(encoded.size, padded.shape[0], channels=3)
+    encrypted_data = np.zeros((rows, columns, 3), dtype=np.float64)
+    encrypted_data.reshape(-1)[: encoded.size] = encoded.reshape(-1)
 
     return DWTCiphertext(
         encrypted_data,
@@ -86,18 +93,32 @@ def encrypt(image, key):
             "key": str(key),
             "shape": encrypted_data.shape,
             "padded_shape": padded.shape,
+            "cipher_shape": encrypted_data.shape,
+            "coefficient_count": int(encrypted_coefficients.size),
+            "coefficient_low": coefficient_low,
+            "coefficient_high": coefficient_high,
             "permutation": np.asarray(permutation, dtype=np.int64),
         },
     )
 
 
 def decrypt(ciphertext, key):
-    """Undo the coefficient permutation, unpack the DWT coefficients, and reconstruct the image."""
     array = np.asarray(ciphertext, dtype=np.float64)
     metadata = getattr(ciphertext, "metadata", {}) if hasattr(ciphertext, "metadata") else {}
     original_shape = tuple(metadata.get("original_shape", array.shape))
     padded_shape = tuple(metadata.get("padded_shape", array.shape))
     flat = array.reshape(-1)
+    coefficient_count = int(metadata.get("coefficient_count", flat.size))
+    if coefficient_count > flat.size:
+        raise ValueError("DWT ciphertext is missing coefficient data")
+    encoded = flat[: coefficient_count * 3]
+    if encoded.size < coefficient_count * 3:
+        raise ValueError("DWT ciphertext is missing coefficient data")
+    flat = _decode_rgb_coefficients(encoded, coefficient_count)
+    if "coefficient_low" in metadata and "coefficient_high" in metadata:
+        coefficient_low = float(metadata["coefficient_low"])
+        coefficient_high = float(metadata["coefficient_high"])
+        flat = flat * (coefficient_high - coefficient_low) + coefficient_low
 
     permutation = _logistic_permutation(flat.size, key, "dwt-coefficients")
     inverse = np.argsort(permutation)
@@ -132,35 +153,50 @@ def save_cipher(path, ciphertext):
     metadata = getattr(ciphertext, "metadata", {}) if hasattr(ciphertext, "metadata") else {}
     original_shape = tuple(metadata.get("original_shape", values.shape))
     padded_shape = tuple(metadata.get("padded_shape", values.shape))
-    low = float(np.min(flat))
-    high = float(np.max(flat))
-    if not np.isfinite(low) or not np.isfinite(high):
+    cipher_shape = tuple(metadata.get("cipher_shape", values.shape))
+    coefficient_count = int(metadata.get("coefficient_count", flat.size // 3))
+    if values.ndim != 3 or values.shape[2] != 3:
+        raise ValueError("DWT ciphertext must be an RGB array")
+    if not np.all(np.isfinite(values)):
         raise ValueError("ciphertext must contain finite values")
-    if high == low:
-        high = low + 1.0
-    values_2d = np.clip((flat - low) / (high - low), 0.0, 1.0).reshape(1, -1)
-    quantized = np.rint(values_2d * 65535.0).astype(np.uint16)
+    quantized = np.rint(np.clip(values, 0.0, 1.0) * 255.0).astype(np.uint8)
     info = PngImagePlugin.PngInfo()
     info.add_text("dwt_original_shape", ",".join(str(value) for value in original_shape))
     info.add_text("dwt_padded_shape", ",".join(str(value) for value in padded_shape))
-    info.add_text("dwt_low", repr(low))
-    info.add_text("dwt_high", repr(high))
-    Image.fromarray(quantized, mode="I;16").save(path, pnginfo=info)
+    info.add_text("dwt_cipher_shape", ",".join(str(value) for value in cipher_shape))
+    info.add_text("dwt_coefficient_count", str(coefficient_count))
+    info.add_text("dwt_coefficient_low", repr(metadata.get("coefficient_low", 0.0)))
+    info.add_text("dwt_coefficient_high", repr(metadata.get("coefficient_high", 1.0)))
+    info.add_text("dwt_encoding", "rgb24")
+    Image.fromarray(quantized, mode="RGB").save(path, pnginfo=info)
 
 
 def load_cipher(path):
     """Load a DWT ciphertext written by :func:`save_cipher`."""
     image = Image.open(path)
     info = image.text
-    if "dwt_original_shape" not in info or "dwt_low" not in info or "dwt_high" not in info:
+    if "dwt_original_shape" not in info or "dwt_coefficient_low" not in info or "dwt_coefficient_high" not in info:
         raise ValueError("PNG is missing DWT ciphertext metadata")
     original_shape = tuple(int(value) for value in info["dwt_original_shape"].split(","))
     padded_shape = tuple(int(value) for value in info.get("dwt_padded_shape", "1,1").split(","))
-    low = float(info["dwt_low"])
-    high = float(info["dwt_high"])
-    values = np.asarray(image, dtype=np.float64) / 65535.0
-    decoded = values.reshape(-1) * (high - low) + low
-    return DWTCiphertext(decoded, {"original_shape": original_shape, "padded_shape": padded_shape})
+    coefficient_low = float(info["dwt_coefficient_low"])
+    coefficient_high = float(info["dwt_coefficient_high"])
+    decoded = np.asarray(image, dtype=np.float64) / 255.0
+    if "dwt_cipher_shape" in info:
+        cipher_shape = tuple(int(value) for value in info["dwt_cipher_shape"].split(","))
+        decoded = decoded.reshape(cipher_shape)
+    coefficient_count = int(info.get("dwt_coefficient_count", decoded.size))
+    return DWTCiphertext(
+        decoded,
+        {
+            "original_shape": original_shape,
+            "padded_shape": padded_shape,
+            "cipher_shape": tuple(decoded.shape),
+            "coefficient_count": coefficient_count,
+            "coefficient_low": coefficient_low,
+            "coefficient_high": coefficient_high,
+        },
+    )
 
 
 def _validate_image_array(image):
@@ -183,6 +219,30 @@ def _pad_to_even(array):
     return padded
 
 
+def _cipher_shape(coefficient_count, height, channels=1):
+    """Return a 2D canvas shape that holds all encrypted coefficients."""
+    rows = max(1, int(height))
+    columns = max(1, int(np.ceil(coefficient_count / (rows * channels))))
+    return rows, columns
+
+
+def _encode_rgb_coefficients(values):
+    quantized = np.rint(np.clip(values, 0.0, 1.0) * 16777215.0).astype(np.uint32)
+    return np.column_stack(
+        (
+            ((quantized >> 16) & 255),
+            ((quantized >> 8) & 255),
+            (quantized & 255),
+        )
+    ).astype(np.float64) / 255.0
+
+
+def _decode_rgb_coefficients(encoded, coefficient_count):
+    bytes_array = np.rint(np.clip(encoded.reshape(coefficient_count, 3), 0.0, 1.0) * 255.0).astype(np.uint32)
+    quantized = (bytes_array[:, 0] << 16) | (bytes_array[:, 1] << 8) | bytes_array[:, 2]
+    return quantized.astype(np.float64) / 16777215.0
+
+
 def _trim_padding(array, padded_height, padded_width, original_shape):
     if array.shape[:2] != (padded_height, padded_width):
         return array
@@ -193,7 +253,6 @@ def _trim_padding(array, padded_height, padded_width, original_shape):
 
 
 def _haar_dwt_channel(channel):
-    """Apply the correct forward Haar DWT using row then column filtering."""
     if channel.shape[0] % 2 == 1 or channel.shape[1] % 2 == 1:
         channel = _pad_to_even(channel)
 

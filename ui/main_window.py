@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from ui.key_dialog import KeyDialog
-from ui.processing_dialog import ProcessingDialog
 from ui.comparison_dialog import ComparisonDialog
 from ui.steps_dialog import StepsDialog
 from ui.key_sensitivity_dialog import KeySensitivityDialog
@@ -19,6 +18,7 @@ from crypto import encrypt, decrypt, save_cipher, load_cipher
 from arnold_dct import encrypt as encrypt_arnold, decrypt as decrypt_arnold, encryption_steps, decryption_steps, save_cipher_png, load_cipher_png
 from dwt_chaotic import encrypt as encrypt_dwt, decrypt as decrypt_dwt, save_cipher as save_dwt_cipher, load_cipher as load_dwt_cipher
 from PySide6.QtGui import QImage, QPixmap
+from PIL import Image
 import numpy as np
 import time
 
@@ -63,9 +63,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Active scheme:"))
         self.scheme_group = QButtonGroup(self)
         self.drpe_radio = QRadioButton("Classic DRPE")
-        self.arnold_radio = QRadioButton("Arnold + DCT + diffusion")
-        self.dwt_radio = QRadioButton("DWT + chaotic permutation")
-        self.drpe_radio.setChecked(True)
+        self.arnold_radio = QRadioButton("Arnold + DCT")
+        self.dwt_radio = QRadioButton("DWT")
+        if self.scheme == 'drpe':
+            self.drpe_radio.setChecked(True)
+        elif self.scheme =='arnold':
+            self.arnold_radio.setChecked(True)
+        elif self.scheme =='dwt':
+            self.dwt_radio.setChecked(True)
         self.scheme_group.addButton(self.drpe_radio)
         self.scheme_group.addButton(self.arnold_radio)
         self.scheme_group.addButton(self.dwt_radio)
@@ -85,11 +90,15 @@ class MainWindow(QMainWindow):
             self.scheme = "arnold"
         else:
             self.scheme = "dwt"
+        self._clear_images()
+
+    def _clear_images(self):
         self.encrypted_image = None
         self.cipher_input = None
+        self.recovered_image = None
         self.encrypted_image_box.image_label.clear_image()
         self.cipher_input_box.image_label.clear_image()
-        self.clear_recovered()
+        self.recovered_image_box.image_label.clear_image()
 
     def build_header(self):
         header_layout = QHBoxLayout()
@@ -100,11 +109,11 @@ class MainWindow(QMainWindow):
         title = QLabel("Image Encryptor")
         title.setObjectName("appTitle")
 
-        subtitle = QLabel("Fourier-domain encryption / Double Random Phase Encoding")
-        subtitle.setObjectName("appSubtitle")
+        # subtitle = QLabel("Fourier-domain encryption / Double Random Phase Encoding")
+        # subtitle.setObjectName("appSubtitle")
 
         title_box.addWidget(title)
-        title_box.addWidget(subtitle)
+        # title_box.addWidget(subtitle)
 
         header_layout.addLayout(title_box)
         header_layout.addStretch()
@@ -114,10 +123,6 @@ class MainWindow(QMainWindow):
         self.keys_button = QPushButton("Encryption Keys")
         self.keys_button.setObjectName("headerAction")
         self.keys_button.clicked.connect(self.open_key_dialog)
-
-        self.processing_button = QPushButton("How it works")
-        self.processing_button.setObjectName("headerAction")
-        self.processing_button.clicked.connect(self.open_processing_dialog)
 
         self.theme_button = QPushButton("Light Theme")
         self.theme_button.setObjectName("headerAction")
@@ -132,7 +137,6 @@ class MainWindow(QMainWindow):
         self.sensitivity_button.clicked.connect(self.open_key_sensitivity_dialog)
 
         button_box.addWidget(self.keys_button)
-        button_box.addWidget(self.processing_button)
         button_box.addWidget(self.compare_button)
         button_box.addWidget(self.sensitivity_button)
         button_box.addWidget(self.theme_button)
@@ -270,10 +274,6 @@ class MainWindow(QMainWindow):
             self.key2 = dialog.key2
             self.clear_recovered()
 
-    def open_processing_dialog(self):
-        dialog = ProcessingDialog(self)
-        dialog.exec()
-
     def open_comparison_dialog(self):
         if self.original_image is None or self.key1 is None or self.key2 is None:
             QMessageBox.warning(self, "Cannot compare", "Load an image and generate keys first.")
@@ -324,8 +324,7 @@ class MainWindow(QMainWindow):
 
         self.original_image_box.image_label.set_image(pixmap)
         self.original_image = ContinuousImage(file_path)
-        self.encrypted_image = None
-        self.encrypted_image_box.image_label.clear_image()
+        self._clear_images()
 
     def encrypt(self):
         if self.original_image is None:
@@ -358,7 +357,18 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def ciphertext_to_pixmap_rgb(ciphertext):
-        magnitude = np.abs(np.asarray(ciphertext))
+        values = np.asarray(ciphertext, dtype=np.float64)
+        if values.ndim == 3 and values.shape[2] == 3:
+            return MainWindow.image_to_pixmap(np.clip(values, 0.0, 1.0))
+
+        magnitude = np.abs(values)
+        if magnitude.ndim == 1:
+            metadata = getattr(ciphertext, "metadata", {})
+            display_shape = tuple(metadata.get("padded_shape", ()))
+            if display_shape and int(np.prod(display_shape)) == magnitude.size:
+                magnitude = magnitude.reshape(display_shape)
+            else:
+                magnitude = magnitude.reshape(1, -1)
 
         maximum = np.max(magnitude)
         if maximum > 0:
@@ -438,6 +448,11 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            png_text = Image.open(file_path).text
+            if self.scheme != "dwt" and "dwt_encoding" in png_text:
+                raise ValueError("This is a DWT cipher. Select the DWT scheme before loading it.")
+            if self.scheme == "dwt" and "dwt_encoding" not in png_text:
+                raise ValueError("This is not a DWT cipher. Select the scheme used to create this PNG.")
             if self.scheme == "arnold":
                 ciphertext, self.arnold_cipher_metadata = load_cipher_png(file_path)
             elif self.scheme == "dwt":
