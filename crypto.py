@@ -1,4 +1,10 @@
 import numpy as np
+from image_codec import (
+    save_complex_png,
+    load_complex_png,
+    save_keypair_png,
+    load_keypair_png,
+)
 
 def generate_phase_mask(shape, seed=None):
     if len(shape) != 2:
@@ -69,16 +75,11 @@ def save_keys(path, key1, key2):
     if key1.ndim != 2 or key2.shape != key1.shape:
         raise ValueError("both keys must be 2-D arrays with the same shape")
 
-    np.savez_compressed(path, key1=key1, key2=key2)
+    save_keypair_png(path, key1, key2)
 
 
 def load_keys(path):
-    with np.load(path) as saved_file:
-        if "key1" not in saved_file or "key2" not in saved_file:
-            raise ValueError("key file must contain arrays named key1 and key2")
-
-        key1 = np.asarray(saved_file["key1"], dtype=complex)
-        key2 = np.asarray(saved_file["key2"], dtype=complex)
+    key1, key2 = load_keypair_png(path)
 
     if key1.ndim != 2 or key2.shape != key1.shape:
         raise ValueError("loaded keys must be 2-D arrays with the same shape")
@@ -87,15 +88,8 @@ def load_keys(path):
 
 def save_cipher(path, ciphertext):
     ciphertext = _validate_array(ciphertext)
-
-    np.savez_compressed(path, ciphertext=ciphertext, image_shape=ciphertext.shape)
+    save_complex_png(path, ciphertext)
 
 
 def load_cipher(path):
-    saved_file = np.load(path)
-    if not isinstance(saved_file, np.lib.npyio.NpzFile):
-        raise ValueError("cipher file must be a NumPy .npz archive")
-    with saved_file:
-        if "ciphertext" not in saved_file:
-            raise ValueError("cipher file must contain an array named ciphertext")
-        return _validate_array(saved_file["ciphertext"])
+    return _validate_array(load_complex_png(path))
