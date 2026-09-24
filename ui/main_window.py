@@ -9,6 +9,7 @@ from ui.key_dialog import KeyDialog
 from ui.processing_dialog import ProcessingDialog
 from ui.comparison_dialog import ComparisonDialog
 from ui.steps_dialog import StepsDialog
+from ui.key_sensitivity_dialog import KeySensitivityDialog
 from ui.image_preview import ImagePreview
 from ui.styles import MAIN_STYLESHEET, LIGHT_STYLESHEET
 from image_handler import ContinuousImage
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
         self.dark_theme_enabled = True
         self.scheme = "drpe"
         self.arnold_cipher_metadata = None
+        self.arnold_diffusion_key = "image-encryptor"
 
         self.setWindowTitle("Fourier-Domain Image Encryption")
         self.resize(1120, 820)
@@ -113,9 +115,14 @@ class MainWindow(QMainWindow):
         self.compare_button.setObjectName("headerAction")
         self.compare_button.clicked.connect(self.open_comparison_dialog)
 
+        self.sensitivity_button = QPushButton("Key sensitivity")
+        self.sensitivity_button.setObjectName("headerAction")
+        self.sensitivity_button.clicked.connect(self.open_key_sensitivity_dialog)
+
         button_box.addWidget(self.keys_button)
         button_box.addWidget(self.processing_button)
         button_box.addWidget(self.compare_button)
+        button_box.addWidget(self.sensitivity_button)
         button_box.addWidget(self.theme_button)
 
         header_layout.addLayout(button_box)
@@ -249,6 +256,20 @@ class MainWindow(QMainWindow):
             return
         ComparisonDialog(self.original_image.image, self.key1, self.key2, self).exec()
 
+    def open_key_sensitivity_dialog(self):
+        if self.original_image is None or (self.encrypted_image is None and self.cipher_input is None):
+            QMessageBox.warning(self, "Cannot demonstrate sensitivity", "Encrypt or load a cipher first.")
+            return
+        if self.scheme == "drpe" and (self.key1 is None or self.key2 is None):
+            QMessageBox.warning(self, "Cannot demonstrate sensitivity", "Generate the active DRPE keys first.")
+            return
+        cipher = self.cipher_input if self.cipher_input is not None else self.encrypted_image
+        KeySensitivityDialog(
+            self.original_image.image, cipher, self.scheme,
+            self.key1, self.key2, self.arnold_cipher_metadata,
+            self.arnold_diffusion_key, self,
+        ).exec()
+
     def toggle_theme(self):
         self.dark_theme_enabled = not self.dark_theme_enabled
         app = QApplication.instance()
@@ -293,7 +314,9 @@ class MainWindow(QMainWindow):
 
         try:
             if self.scheme == "arnold":
-                self.encrypted_image, self.arnold_cipher_metadata = encrypt_arnold(self.original_image.image)
+                self.encrypted_image, self.arnold_cipher_metadata = encrypt_arnold(
+                    self.original_image.image, diffusion_key=self.arnold_diffusion_key
+                )
             else:
                 self.encrypted_image = encrypt(self.original_image.image, self.key1, self.key2)
         except ValueError as error:
@@ -414,7 +437,10 @@ class MainWindow(QMainWindow):
                 if self.arnold_cipher_metadata is None:
                     QMessageBox.warning(self, "Cannot decrypt", "Encrypt with the Arnold scheme in this session first.")
                     return
-                self.recovered_image = decrypt_arnold(self.cipher_input, self.arnold_cipher_metadata)
+                self.recovered_image = decrypt_arnold(
+                    self.cipher_input, self.arnold_cipher_metadata,
+                    diffusion_key=self.arnold_diffusion_key,
+                )
             else:
                 self.recovered_image = decrypt(self.cipher_input, self.key1, self.key2)
         except ValueError as error:
@@ -443,7 +469,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot show steps", "Load an image first.")
             return
         if self.scheme == "arnold":
-            steps, _ = encryption_steps(self.original_image.image)
+            steps, _ = encryption_steps(
+                self.original_image.image, diffusion_key=self.arnold_diffusion_key
+            )
         else:
             cipher = self.encrypted_image if self.encrypted_image is not None else encrypt(self.original_image.image, self.key1, self.key2)
             masked = self.original_image.image * (self.key1[..., None] if self.original_image.image.ndim == 3 else self.key1)
@@ -461,7 +489,10 @@ class MainWindow(QMainWindow):
             if self.arnold_cipher_metadata is None:
                 QMessageBox.warning(self, "Cannot show steps", "The Arnold cipher metadata is unavailable.")
                 return
-            steps = decryption_steps(cipher, self.arnold_cipher_metadata)
+            steps = decryption_steps(
+                cipher, self.arnold_cipher_metadata,
+                diffusion_key=self.arnold_diffusion_key,
+            )
         else:
             spectrum = np.fft.fft2(cipher, axes=(0, 1))
             unmasked = spectrum * np.conj(self.key2[..., None] if cipher.ndim == 3 else self.key2)
