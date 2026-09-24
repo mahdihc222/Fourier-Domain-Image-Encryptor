@@ -159,7 +159,7 @@ def decryption_steps(ciphertext, metadata, arnold_iterations=3, diffusion_key="i
     coefficients = coefficients * metadata["scale"] + metadata["minimum"]
     idct = _idct2(coefficients)
     restored = inverse_arnold_map(idct, arnold_iterations)
-    return [("Ciphertext", encrypted), ("After diffusion reversal", coefficients), ("IDCT", idct), ("Inverse Arnold map", np.clip(restored, 0.0, 1.0))]
+    return [("Ciphertext", encrypted), ("After diffusion reversal", np.log1p(np.abs(coefficients))), ("IDCT", idct), ("Inverse Arnold map", np.clip(restored, 0.0, 1.0))]
 
 
 def save_cipher_png(path, ciphertext, metadata):

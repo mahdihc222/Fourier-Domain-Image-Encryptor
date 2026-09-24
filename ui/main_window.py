@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
         ComparisonDialog(self.original_image.image, self.key1, self.key2, self).exec()
 
     def open_key_sensitivity_dialog(self):
-        if self.original_image is None or (self.encrypted_image is None and self.cipher_input is None):
+        if self.encrypted_image is None and self.cipher_input is None:
             QMessageBox.warning(self, "Cannot demonstrate sensitivity", "Encrypt or load a cipher first.")
             return
         if self.scheme == "drpe" and (self.key1 is None or self.key2 is None):
@@ -265,7 +265,8 @@ class MainWindow(QMainWindow):
             return
         cipher = self.cipher_input if self.cipher_input is not None else self.encrypted_image
         KeySensitivityDialog(
-            self.original_image.image, cipher, self.scheme,
+            None if self.original_image is None else self.original_image.image,
+            cipher, self.scheme,
             self.key1, self.key2, self.arnold_cipher_metadata,
             self.arnold_diffusion_key, self,
         ).exec()

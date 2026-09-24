@@ -2,7 +2,7 @@
 import numpy as np
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QDoubleSpinBox, QGroupBox, QSizePolicy
+    QDoubleSpinBox, QGroupBox, QSizePolicy, QComboBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -18,7 +18,7 @@ class KeySensitivityDialog(QDialog):
     def __init__(self, image, ciphertext, scheme, key1=None, key2=None,
                  metadata=None, diffusion_key="image-encryptor", parent=None):
         super().__init__(parent)
-        self.image = np.asarray(image, dtype=float)
+        self.image = None if image is None else np.asarray(image, dtype=float)
         self.ciphertext = ciphertext
         self.scheme = scheme
         self.key1 = key1
@@ -48,12 +48,17 @@ class KeySensitivityDialog(QDialog):
         controls = QGroupBox("Controlled key change")
         controls_layout = QVBoxLayout(controls)
         if self.scheme == "drpe":
-            controls_layout.addWidget(QLabel("Change applied to phase key 1 (radians):"))
+            controls_layout.addWidget(QLabel("Keys to perturb:"))
+            self.key_target = QComboBox()
+            self.key_target.addItems(["Key 1", "Key 2", "Both keys"])
+            self.key_target.setCurrentText("Both keys")
+            controls_layout.addWidget(self.key_target)
+            controls_layout.addWidget(QLabel("Maximum phase change per selected-key element (radians):"))
             self.amount = QDoubleSpinBox()
-            self.amount.setRange(0.000001, 1.0)
+            self.amount.setRange(0.000001, np.pi)
             self.amount.setDecimals(6)
             self.amount.setSingleStep(0.001)
-            self.amount.setValue(0.5)
+            self.amount.setValue(1.5)
             controls_layout.addWidget(self.amount)
             change_text = "Change phase key 1 and decrypt"
         else:
@@ -70,19 +75,35 @@ class KeySensitivityDialog(QDialog):
         self.status.setObjectName("statusLabel")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        result_row = QHBoxLayout()
+        self.original_preview = ImagePreview("Original unavailable")
         self.preview = ImagePreview("Changed-key result")
-        self.preview.setMinimumHeight(260)
-        self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.preview, 1)
+        for preview in (self.original_preview, self.preview):
+            preview.setMinimumHeight(260)
+            preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            result_row.addWidget(preview, 1)
+        layout.addLayout(result_row, 1)
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
         layout.addWidget(close)
 
     def _decrypt_with_changed_key(self):
         if self.scheme == "drpe":
-            self.changed_key1 = self.key1 * np.exp(1j * self.amount.value())
-            recovered = decrypt_drpe(self.ciphertext, self.changed_key1, self.key2)
-            change_description = f"phase key 1 changed by {self.amount.value():.6f} rad"
+            rng = np.random.default_rng(0)
+            phase_noise = rng.uniform(
+                -self.amount.value(), self.amount.value(), size=self.key1.shape
+            )
+            self.changed_key1 = self.key1.copy()
+            self.changed_key2 = self.key2.copy()
+            target = self.key_target.currentText()
+            if target in ("Key 1", "Both keys"):
+                self.changed_key1 *= np.exp(1j * phase_noise)
+            if target in ("Key 2", "Both keys"):
+                self.changed_key2 *= np.exp(1j * rng.uniform(
+                    -self.amount.value(), self.amount.value(), size=self.key2.shape
+                ))
+            recovered = decrypt_drpe(self.ciphertext, self.changed_key1, self.changed_key2)
+            change_description = f"{target} changed by at most {self.amount.value():.6f} rad per element"
         else:
             self.changed_diffusion_key = f"{self.diffusion_key}x"
             recovered = decrypt_arnold(
@@ -90,13 +111,22 @@ class KeySensitivityDialog(QDialog):
                 diffusion_key=self.changed_diffusion_key,
             )
             change_description = "diffusion key changed by one character"
+        if self.image is not None:
+            self.original_preview.set_image(self._array_to_pixmap(self.image))
+        self.preview.set_image(self._array_to_pixmap(recovered))
+        if self.image is None:
+            self.status.setText(f"Wrong-key result: {change_description}. Original image was not loaded, so comparison metrics are unavailable.")
+            return
+        if self.image.shape != recovered.shape:
+            self.status.setText(
+                f"Wrong-key result: {change_description}. The loaded plaintext shape "
+                f"{self.image.shape} does not match the cipher result shape "
+                f"{recovered.shape}, so comparison metrics are unavailable."
+            )
+            return
         mse = float(np.mean((self.image - recovered) ** 2))
         correlation = float(np.corrcoef(self.image.ravel(), recovered.ravel())[0, 1])
-        self.preview.set_image(self._array_to_pixmap(recovered))
-        self.status.setText(
-            f"Wrong-key result: {change_description}. MSE: {mse:.6f}; "
-            f"correlation with original: {correlation:.6f}"
-        )
+        self.status.setText(f"Wrong-key result: {change_description}. MSE: {mse:.6f}; correlation with original: {correlation:.6f}")
 
     @staticmethod
     def _array_to_pixmap(array):
