@@ -7,6 +7,7 @@ keeps the original image shape and supports grayscale or RGB arrays.
 """
 import hashlib
 import numpy as np
+from PIL import Image, PngImagePlugin
 
 
 def _validate(image):
@@ -48,7 +49,7 @@ def inverse_arnold_map(image, iterations=1):
             for column in range(side):
                 old_row = (2 * row - column) % side
                 old_column = (-row + column) % side
-                restored[row, column] = result[old_row, old_column]
+                restored[old_row, old_column] = result[row, column]
         result = restored
     return result
 
@@ -135,3 +136,24 @@ def decryption_steps(ciphertext, metadata, arnold_iterations=3, diffusion_key="i
     idct = _idct2(coefficients)
     restored = inverse_arnold_map(idct, arnold_iterations)
     return [("Ciphertext", encrypted), ("After diffusion reversal", coefficients), ("IDCT", idct), ("Inverse Arnold map", np.clip(restored, 0.0, 1.0))]
+
+
+def save_cipher_png(path, ciphertext, metadata):
+    """Store an Arnold ciphertext and its reversible scale metadata as PNG."""
+    pixels = np.rint(np.clip(ciphertext, 0.0, 1.0) * 255.0).astype(np.uint8)
+    info = PngImagePlugin.PngInfo()
+    info.add_text("arnold_minimum", repr(metadata["minimum"]))
+    info.add_text("arnold_scale", repr(metadata["scale"]))
+    info.add_text("arnold_shape", ",".join(str(value) for value in metadata["shape"]))
+    Image.fromarray(pixels if pixels.ndim == 2 else pixels, mode="L" if pixels.ndim == 2 else "RGB").save(path, pnginfo=info)
+
+
+def load_cipher_png(path):
+    """Load an Arnold PNG ciphertext and return its ciphertext/metadata pair."""
+    image = Image.open(path)
+    required = ("arnold_minimum", "arnold_scale", "arnold_shape")
+    if not all(key in image.text for key in required):
+        raise ValueError("PNG is missing Arnold ciphertext metadata")
+    pixels = np.asarray(image.convert("RGB" if image.mode == "RGB" else "L"), dtype=np.float64) / 255.0
+    metadata = {"minimum": float(image.text["arnold_minimum"]), "scale": float(image.text["arnold_scale"]), "shape": tuple(int(value) for value in image.text["arnold_shape"].split(","))}
+    return pixels, metadata

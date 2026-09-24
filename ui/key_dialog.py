@@ -133,8 +133,8 @@ class KeyDialog(QDialog):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Encryption Keys",
-            "keys.npz",
-            "NumPy archives (*.npz)",
+            "keys.png",
+            "PNG images (*.png)",
         )
         if not file_path:
             return
@@ -152,7 +152,7 @@ class KeyDialog(QDialog):
             self,
             "Load Encryption Keys",
             "",
-            "NumPy archives (*.npz)",
+            "PNG images (*.png)",
         )
         if not file_path:
             return

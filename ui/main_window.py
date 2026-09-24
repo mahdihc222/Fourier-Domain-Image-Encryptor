@@ -1,20 +1,24 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QPushButton, QFileDialog, QMessageBox, QFrame, QSizePolicy,
-    QApplication
+    QApplication, QRadioButton, QButtonGroup
 )
 from PySide6.QtCore import Qt
 
 from ui.key_dialog import KeyDialog
 from ui.processing_dialog import ProcessingDialog
+from ui.comparison_dialog import ComparisonDialog
+from ui.steps_dialog import StepsDialog
 from ui.image_preview import ImagePreview
 from ui.styles import MAIN_STYLESHEET, LIGHT_STYLESHEET
 from image_handler import ContinuousImage
 
 
 from crypto import encrypt, decrypt, save_cipher, load_cipher
+from arnold_dct import encrypt as encrypt_arnold, decrypt as decrypt_arnold, encryption_steps, decryption_steps, save_cipher_png, load_cipher_png
 from PySide6.QtGui import QImage, QPixmap
 import numpy as np
+import time
 
 class MainWindow(QMainWindow):
 
@@ -28,6 +32,8 @@ class MainWindow(QMainWindow):
         self.key1 = None
         self.key2 = None
         self.dark_theme_enabled = True
+        self.scheme = "drpe"
+        self.arnold_cipher_metadata = None
 
         self.setWindowTitle("Fourier-Domain Image Encryption")
         self.resize(1120, 820)
@@ -42,8 +48,34 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(20)
 
         main_layout.addLayout(self.build_header())
+        main_layout.addWidget(self.build_scheme_selector())
         main_layout.addWidget(self.build_encryption_group(), 1)
         main_layout.addWidget(self.build_decryption_group(), 1)
+
+    def build_scheme_selector(self):
+        card = QFrame()
+        card.setObjectName("workflowCard")
+        layout = QHBoxLayout(card)
+        layout.addWidget(QLabel("Active scheme:"))
+        self.scheme_group = QButtonGroup(self)
+        self.drpe_radio = QRadioButton("Classic DRPE")
+        self.arnold_radio = QRadioButton("Arnold + DCT + diffusion")
+        self.drpe_radio.setChecked(True)
+        self.scheme_group.addButton(self.drpe_radio)
+        self.scheme_group.addButton(self.arnold_radio)
+        self.drpe_radio.toggled.connect(self.on_scheme_changed)
+        layout.addWidget(self.drpe_radio)
+        layout.addWidget(self.arnold_radio)
+        layout.addStretch()
+        return card
+
+    def on_scheme_changed(self):
+        self.scheme = "drpe" if self.drpe_radio.isChecked() else "arnold"
+        self.encrypted_image = None
+        self.cipher_input = None
+        self.encrypted_image_box.image_label.clear_image()
+        self.cipher_input_box.image_label.clear_image()
+        self.clear_recovered()
 
     def build_header(self):
         header_layout = QHBoxLayout()
@@ -77,8 +109,13 @@ class MainWindow(QMainWindow):
         self.theme_button.setObjectName("headerAction")
         self.theme_button.clicked.connect(self.toggle_theme)
 
+        self.compare_button = QPushButton("Compare schemes")
+        self.compare_button.setObjectName("headerAction")
+        self.compare_button.clicked.connect(self.open_comparison_dialog)
+
         button_box.addWidget(self.keys_button)
         button_box.addWidget(self.processing_button)
+        button_box.addWidget(self.compare_button)
         button_box.addWidget(self.theme_button)
 
         header_layout.addLayout(button_box)
@@ -95,9 +132,10 @@ class MainWindow(QMainWindow):
         self.load_image_button = self.create_button("Load image", self.load_image)
         self.save_cipher_button = self.create_button("Save cipher", self.save_cipher)
         self.encrypt_button = self.create_button("Encrypt", self.encrypt, primary=True)
+        self.encrypt_steps_button = self.create_button("Show steps", self.show_encryption_steps)
         self.populate_workflow(row, self.original_image_box, self.load_image_button,
                                self.encrypt_button, self.encrypted_image_box,
-                               self.save_cipher_button,
+                               self.save_cipher_button, self.encrypt_steps_button,
                                "Set phase keys.", "Save your cipher.")
         return group
 
@@ -112,9 +150,10 @@ class MainWindow(QMainWindow):
         self.load_cipher_button = self.create_button("Load cipher", self.load_cipher)
         self.save_recovered_button = self.create_button("Save image", self.save_recovered)
         self.decrypt_button = self.create_button("Decrypt", self.decrypt, primary=True)
+        self.decrypt_steps_button = self.create_button("Show steps", self.show_decryption_steps)
         self.populate_workflow(row, self.cipher_input_box, self.load_cipher_button,
                                self.decrypt_button, self.recovered_image_box,
-                               self.save_recovered_button,
+                               self.save_recovered_button, self.decrypt_steps_button,
                                "Use original keys.", "Save your image.")
         return group
 
@@ -151,7 +190,7 @@ class MainWindow(QMainWindow):
         return card, row
 
     @staticmethod
-    def populate_workflow(row, input_box, load_button, action, output_box, save_button,
+    def populate_workflow(row, input_box, load_button, action, output_box, save_button, step_button,
                           input_hint, output_hint):
         for box, button, hint in ((input_box, load_button, input_hint),
                                   (output_box, save_button, output_hint)):
@@ -167,6 +206,7 @@ class MainWindow(QMainWindow):
             # Equal side widths keep the button centered beneath its preview.
             footer.addWidget(description, 1)
             footer.addWidget(button, 0, Qt.AlignVCenter)
+            footer.addWidget(step_button, 0, Qt.AlignVCenter)
             footer.addWidget(QWidget(), 1)
             column.addLayout(footer)
             if box is output_box:
@@ -203,6 +243,12 @@ class MainWindow(QMainWindow):
         dialog = ProcessingDialog(self)
         dialog.exec()
 
+    def open_comparison_dialog(self):
+        if self.original_image is None or self.key1 is None or self.key2 is None:
+            QMessageBox.warning(self, "Cannot compare", "Load an image and generate keys first.")
+            return
+        ComparisonDialog(self.original_image.image, self.key1, self.key2, self).exec()
+
     def toggle_theme(self):
         self.dark_theme_enabled = not self.dark_theme_enabled
         app = QApplication.instance()
@@ -237,7 +283,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot encrypt", "Load an image first.")
             return
 
-        if self.key1 is None or self.key2 is None:
+        if self.scheme == "drpe" and (self.key1 is None or self.key2 is None):
             QMessageBox.warning(
                 self,
                 "Cannot encrypt",
@@ -246,11 +292,10 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self.encrypted_image = encrypt(
-                self.original_image.image,
-                self.key1,
-                self.key2,
-            )
+            if self.scheme == "arnold":
+                self.encrypted_image, self.arnold_cipher_metadata = encrypt_arnold(self.original_image.image)
+            else:
+                self.encrypted_image = encrypt(self.original_image.image, self.key1, self.key2)
         except ValueError as error:
             QMessageBox.warning(self, "Cannot encrypt", str(error))
             return
@@ -307,14 +352,17 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Encrypted Cipher",
-            "cipher.npz",
-            "NumPy archives (*.npz)",
+            "cipher.png",
+            "PNG images (*.png)",
         )
         if not file_path:
             return
 
         try:
-            save_cipher(file_path, self.encrypted_image)
+            if self.scheme == "arnold":
+                save_cipher_png(file_path, self.encrypted_image, self.arnold_cipher_metadata)
+            else:
+                save_cipher(file_path, self.encrypted_image)
         except (OSError, ValueError) as error:
             QMessageBox.critical(self, "Could not save cipher", str(error))
             return
@@ -329,13 +377,16 @@ class MainWindow(QMainWindow):
     def load_cipher(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Encrypted Cipher", "",
-            "NumPy archives (*.npz)"
+            "PNG images (*.png)"
         )
         if not file_path:
             return
 
         try:
-            ciphertext = load_cipher(file_path)
+            if self.scheme == "arnold":
+                ciphertext, self.arnold_cipher_metadata = load_cipher_png(file_path)
+            else:
+                ciphertext = load_cipher(file_path)
         except (OSError, ValueError, EOFError) as error:
             QMessageBox.warning(self, "Could not load cipher", str(error))
             return
@@ -355,11 +406,17 @@ class MainWindow(QMainWindow):
         if self.cipher_input is None:
             QMessageBox.warning(self, "Cannot decrypt", "Load a saved cipher first.")
             return
-        if self.key1 is None or self.key2 is None:
+        if self.scheme == "drpe" and (self.key1 is None or self.key2 is None):
             QMessageBox.warning(self, "Cannot decrypt", "Load the original encryption keys first.")
             return
         try:
-            self.recovered_image = decrypt(self.cipher_input, self.key1, self.key2)
+            if self.scheme == "arnold":
+                if self.arnold_cipher_metadata is None:
+                    QMessageBox.warning(self, "Cannot decrypt", "Encrypt with the Arnold scheme in this session first.")
+                    return
+                self.recovered_image = decrypt_arnold(self.cipher_input, self.arnold_cipher_metadata)
+            else:
+                self.recovered_image = decrypt(self.cipher_input, self.key1, self.key2)
         except ValueError as error:
             QMessageBox.warning(self, "Cannot decrypt", str(error))
             return
@@ -380,3 +437,35 @@ class MainWindow(QMainWindow):
             file_path += ".png"
         if not self.image_to_pixmap(self.recovered_image).save(file_path, "PNG"):
             QMessageBox.critical(self, "Could not save image", "Failed to write the PNG file.")
+
+    def show_encryption_steps(self):
+        if self.original_image is None:
+            QMessageBox.warning(self, "Cannot show steps", "Load an image first.")
+            return
+        if self.scheme == "arnold":
+            steps, _ = encryption_steps(self.original_image.image)
+        else:
+            cipher = self.encrypted_image if self.encrypted_image is not None else encrypt(self.original_image.image, self.key1, self.key2)
+            masked = self.original_image.image * (self.key1[..., None] if self.original_image.image.ndim == 3 else self.key1)
+            spectrum = np.fft.fft2(masked, axes=(0, 1))
+            scrambled = spectrum * (self.key2[..., None] if spectrum.ndim == 3 else self.key2)
+            steps = [("Original", self.original_image.image), ("After phase key 1", np.abs(masked)), ("2-D Fourier transform", np.abs(spectrum)), ("After phase key 2", np.abs(scrambled)), ("Inverse Fourier transform / cipher", np.abs(cipher))]
+        StepsDialog("Encryption steps", steps, self).exec()
+
+    def show_decryption_steps(self):
+        if self.cipher_input is None and self.encrypted_image is None:
+            QMessageBox.warning(self, "Cannot show steps", "Encrypt or load a cipher first.")
+            return
+        cipher = self.cipher_input if self.cipher_input is not None else self.encrypted_image
+        if self.scheme == "arnold":
+            if self.arnold_cipher_metadata is None:
+                QMessageBox.warning(self, "Cannot show steps", "The Arnold cipher metadata is unavailable.")
+                return
+            steps = decryption_steps(cipher, self.arnold_cipher_metadata)
+        else:
+            spectrum = np.fft.fft2(cipher, axes=(0, 1))
+            unmasked = spectrum * np.conj(self.key2[..., None] if cipher.ndim == 3 else self.key2)
+            partially_recovered = np.fft.ifft2(unmasked, axes=(0, 1))
+            unmasked_image = partially_recovered * np.conj(self.key1[..., None] if cipher.ndim == 3 else self.key1)
+            steps = [("Ciphertext", np.abs(cipher)), ("2-D Fourier transform", np.abs(spectrum)), ("Remove phase key 2", np.abs(unmasked)), ("Inverse Fourier transform", np.abs(partially_recovered)), ("Remove phase key 1 / recovered image", np.abs(unmasked_image))]
+        StepsDialog("Decryption steps", steps, self).exec()
