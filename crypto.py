@@ -62,9 +62,9 @@ def _validate_inputs(image, key1, key2, dtype=float):
 def _validate_array(data, dtype=complex):
     data = np.asarray(data, dtype=dtype)
     if data.ndim not in (2, 3) or (data.ndim == 3 and data.shape[2] != 3):
-        raise ValueError("data must be a 2-D grayscale or 3-channel RGB array")
+        raise ValueError("Image must be a 2-D grayscale or 3-channel RGB array")
     if data.size == 0 or not np.all(np.isfinite(data)):
-        raise ValueError("data must be nonempty and contain only finite values")
+        raise ValueError("Image must be nonempty and contain only finite values")
     return data
 
 
@@ -75,21 +75,40 @@ def save_keys(path, key1, key2):
     if key1.ndim != 2 or key2.shape != key1.shape:
         raise ValueError("both keys must be 2-D arrays with the same shape")
 
+    if str(path).lower().endswith(".npz"):
+        np.savez(path, key1=key1, key2=key2)
+        return
+
     save_keypair_png(path, key1, key2)
 
 
 def load_keys(path):
-    key1, key2 = load_keypair_png(path)
+    if str(path).lower().endswith(".npz"):
+        archive = np.load(path)
+        if "key1" not in archive or "key2" not in archive:
+            raise ValueError("npz archive is missing phase-key data")
+        key1, key2 = archive["key1"], archive["key2"]
+    else:
+        key1, key2 = load_keypair_png(path)
 
     if key1.ndim != 2 or key2.shape != key1.shape:
         raise ValueError("loaded keys must be 2-D arrays with the same shape")
 
     return key1, key2
 
+
 def save_cipher(path, ciphertext):
     ciphertext = _validate_array(ciphertext)
+    if str(path).lower().endswith(".npz"):
+        np.savez(path, ciphertext=ciphertext)
+        return
     save_complex_png(path, ciphertext)
 
 
 def load_cipher(path):
+    if str(path).lower().endswith(".npz"):
+        archive = np.load(path)
+        if "ciphertext" not in archive:
+            raise ValueError("npz archive is missing ciphertext data")
+        return _validate_array(archive["ciphertext"])
     return _validate_array(load_complex_png(path))

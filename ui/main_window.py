@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QPushButton, QFileDialog, QMessageBox, QFrame, QSizePolicy,
-    QApplication, QRadioButton, QButtonGroup
+    QApplication, QRadioButton, QButtonGroup, QInputDialog
 )
 from PySide6.QtCore import Qt
 
@@ -17,6 +17,7 @@ from image_handler import ContinuousImage
 
 from crypto import encrypt, decrypt, save_cipher, load_cipher
 from arnold_dct import encrypt as encrypt_arnold, decrypt as decrypt_arnold, encryption_steps, decryption_steps, save_cipher_png, load_cipher_png
+from dwt_chaotic import encrypt as encrypt_dwt, decrypt as decrypt_dwt, save_cipher as save_dwt_cipher, load_cipher as load_dwt_cipher
 from PySide6.QtGui import QImage, QPixmap
 import numpy as np
 import time
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
         self.recovered_image = None
         self.key1 = None
         self.key2 = None
+        self.dwt_key = "image-encryptor-dwt"
         self.dark_theme_enabled = True
         self.scheme = "drpe"
         self.arnold_cipher_metadata = None
@@ -62,17 +64,27 @@ class MainWindow(QMainWindow):
         self.scheme_group = QButtonGroup(self)
         self.drpe_radio = QRadioButton("Classic DRPE")
         self.arnold_radio = QRadioButton("Arnold + DCT + diffusion")
+        self.dwt_radio = QRadioButton("DWT + chaotic permutation")
         self.drpe_radio.setChecked(True)
         self.scheme_group.addButton(self.drpe_radio)
         self.scheme_group.addButton(self.arnold_radio)
+        self.scheme_group.addButton(self.dwt_radio)
         self.drpe_radio.toggled.connect(self.on_scheme_changed)
+        self.arnold_radio.toggled.connect(self.on_scheme_changed)
+        self.dwt_radio.toggled.connect(self.on_scheme_changed)
         layout.addWidget(self.drpe_radio)
         layout.addWidget(self.arnold_radio)
+        layout.addWidget(self.dwt_radio)
         layout.addStretch()
         return card
 
     def on_scheme_changed(self):
-        self.scheme = "drpe" if self.drpe_radio.isChecked() else "arnold"
+        if self.drpe_radio.isChecked():
+            self.scheme = "drpe"
+        elif self.arnold_radio.isChecked():
+            self.scheme = "arnold"
+        else:
+            self.scheme = "dwt"
         self.encrypted_image = None
         self.cipher_input = None
         self.encrypted_image_box.image_label.clear_image()
@@ -235,6 +247,18 @@ class MainWindow(QMainWindow):
         return group
 
     def open_key_dialog(self):
+        if self.scheme == "dwt":
+            value, ok = QInputDialog.getText(
+                self,
+                "DWT key",
+                "Enter the master secret key for the DWT method:",
+                text=self.dwt_key,
+            )
+            if ok:
+                self.dwt_key = str(value)
+            self.clear_recovered()
+            return
+
         image_shape = None if self.original_image is None else self.original_image.image.shape
         if self.cipher_input is not None:
             image_shape = self.cipher_input.shape
@@ -257,6 +281,9 @@ class MainWindow(QMainWindow):
         ComparisonDialog(self.original_image.image, self.key1, self.key2, self).exec()
 
     def open_key_sensitivity_dialog(self):
+        if self.scheme == "dwt":
+            QMessageBox.information(self, "Key sensitivity", "The DWT scheme uses a deterministic master key; the sensitivity demo is not available for this method.")
+            return
         if self.encrypted_image is None and self.cipher_input is None:
             QMessageBox.warning(self, "Cannot demonstrate sensitivity", "Encrypt or load a cipher first.")
             return
@@ -318,6 +345,8 @@ class MainWindow(QMainWindow):
                 self.encrypted_image, self.arnold_cipher_metadata = encrypt_arnold(
                     self.original_image.image, diffusion_key=self.arnold_diffusion_key
                 )
+            elif self.scheme == "dwt":
+                self.encrypted_image = encrypt_dwt(self.original_image.image, self.dwt_key)
             else:
                 self.encrypted_image = encrypt(self.original_image.image, self.key1, self.key2)
         except ValueError as error:
@@ -385,6 +414,8 @@ class MainWindow(QMainWindow):
         try:
             if self.scheme == "arnold":
                 save_cipher_png(file_path, self.encrypted_image, self.arnold_cipher_metadata)
+            elif self.scheme == "dwt":
+                save_dwt_cipher(file_path, self.encrypted_image)
             else:
                 save_cipher(file_path, self.encrypted_image)
         except (OSError, ValueError) as error:
@@ -409,6 +440,8 @@ class MainWindow(QMainWindow):
         try:
             if self.scheme == "arnold":
                 ciphertext, self.arnold_cipher_metadata = load_cipher_png(file_path)
+            elif self.scheme == "dwt":
+                ciphertext = load_dwt_cipher(file_path)
             else:
                 ciphertext = load_cipher(file_path)
         except (OSError, ValueError, EOFError) as error:
@@ -442,6 +475,8 @@ class MainWindow(QMainWindow):
                     self.cipher_input, self.arnold_cipher_metadata,
                     diffusion_key=self.arnold_diffusion_key,
                 )
+            elif self.scheme == "dwt":
+                self.recovered_image = decrypt_dwt(self.cipher_input, self.dwt_key)
             else:
                 self.recovered_image = decrypt(self.cipher_input, self.key1, self.key2)
         except ValueError as error:
@@ -473,6 +508,16 @@ class MainWindow(QMainWindow):
             steps, _ = encryption_steps(
                 self.original_image.image, diffusion_key=self.arnold_diffusion_key
             )
+        elif self.scheme == "dwt":
+            image = self.original_image.image
+            ll1, lh1, hl1, hh1 = encrypt_dwt.__globals__["haar_dwt2"](image)
+            ll2, lh2, hl2, hh2 = encrypt_dwt.__globals__["haar_dwt2"](ll1)
+            steps = [
+                ("Original", image),
+                ("LL1 / LH1 / HL1 / HH1", np.concatenate([ll1, lh1], axis=1)),
+                ("Level-2 LL2 / LH2 / HL2 / HH2", np.concatenate([ll2, lh2], axis=1)),
+                ("Encrypted image", np.abs(self.encrypted_image if self.encrypted_image is not None else encrypt_dwt(image, self.dwt_key))),
+            ]
         else:
             cipher = self.encrypted_image if self.encrypted_image is not None else encrypt(self.original_image.image, self.key1, self.key2)
             masked = self.original_image.image * (self.key1[..., None] if self.original_image.image.ndim == 3 else self.key1)
@@ -494,6 +539,16 @@ class MainWindow(QMainWindow):
                 cipher, self.arnold_cipher_metadata,
                 diffusion_key=self.arnold_diffusion_key,
             )
+        elif self.scheme == "dwt":
+            image = np.asarray(cipher, dtype=np.float64)
+            ll1, lh1, hl1, hh1 = encrypt_dwt.__globals__["haar_dwt2"](image)
+            ll2, lh2, hl2, hh2 = encrypt_dwt.__globals__["haar_dwt2"](ll1)
+            steps = [
+                ("Ciphertext", image),
+                ("Level-1 DWT", np.concatenate([ll1, hl1], axis=1)),
+                ("Level-2 DWT on LL1", np.concatenate([ll2, hl2], axis=1)),
+                ("Recovered image", np.abs(decrypt_dwt(cipher, self.dwt_key))),
+            ]
         else:
             spectrum = np.fft.fft2(cipher, axes=(0, 1))
             unmasked = spectrum * np.conj(self.key2[..., None] if cipher.ndim == 3 else self.key2)
