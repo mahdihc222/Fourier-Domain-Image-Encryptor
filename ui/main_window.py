@@ -16,7 +16,7 @@ from image_handler import ContinuousImage
 
 from crypto import encrypt, decrypt, save_cipher, load_cipher
 from arnold_dct import encrypt as encrypt_arnold, decrypt as decrypt_arnold, encryption_steps, decryption_steps, save_cipher_png, load_cipher_png
-from dwt_chaotic import encrypt as encrypt_dwt, decrypt as decrypt_dwt, encryption_steps as dwt_encryption_steps, save_cipher as save_dwt_cipher, load_cipher as load_dwt_cipher
+from dwt_chaotic import encrypt as encrypt_dwt, decrypt as decrypt_dwt, encryption_steps as dwt_encryption_steps, decryption_steps as dwt_decryption_steps, save_cipher as save_dwt_cipher, load_cipher as load_dwt_cipher
 from PySide6.QtGui import QImage, QPixmap
 from PIL import Image
 import numpy as np
@@ -250,15 +250,20 @@ class MainWindow(QMainWindow):
         return group
 
     def open_key_dialog(self):
-        if self.scheme == "dwt":
+        if self.scheme in ("dwt", "arnold"):
+            method_name = "DWT" if self.scheme == "dwt" else "Arnold + DCT"
+            current_key = self.dwt_key if self.scheme == "dwt" else self.arnold_diffusion_key
             value, ok = QInputDialog.getText(
                 self,
-                "DWT key",
-                "Enter the master secret key for the DWT method:",
-                text=self.dwt_key,
+                f"{method_name} key",
+                f"Enter the secret key for the {method_name} method:",
+                text=current_key,
             )
             if ok:
-                self.dwt_key = str(value)
+                if self.scheme == "dwt":
+                    self.dwt_key = str(value)
+                else:
+                    self.arnold_diffusion_key = str(value)
             self.clear_recovered()
             return
 
@@ -282,6 +287,7 @@ class MainWindow(QMainWindow):
             self.key1,
             self.key2,
             self.dwt_key,
+            self.arnold_diffusion_key,
             self,
         ).exec()
 
@@ -552,15 +558,7 @@ class MainWindow(QMainWindow):
                 diffusion_key=self.arnold_diffusion_key,
             )
         elif self.scheme == "dwt":
-            image = np.asarray(cipher, dtype=np.float64)
-            ll1, lh1, hl1, hh1 = encrypt_dwt.__globals__["haar_dwt2"](image)
-            ll2, lh2, hl2, hh2 = encrypt_dwt.__globals__["haar_dwt2"](ll1)
-            steps = [
-                ("Ciphertext", image),
-                ("Level-1 DWT", np.concatenate([ll1, hl1], axis=1)),
-                ("Level-2 DWT on LL1", np.concatenate([ll2, hl2], axis=1)),
-                ("Recovered image", np.abs(decrypt_dwt(cipher, self.dwt_key))),
-            ]
+            steps = dwt_decryption_steps(cipher, self.dwt_key)
         else:
             spectrum = np.fft.fft2(cipher, axes=(0, 1))
             unmasked = spectrum * np.conj(self.key2[..., None] if cipher.ndim == 3 else self.key2)
