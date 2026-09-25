@@ -6,7 +6,7 @@ A desktop application for encrypting and decrypting images using three different
 
 This project implements and compares multiple image encryption algorithms that operate in the transform domain rather than the spatial domain. The core idea is to scramble image data using mathematical transforms (Fourier, DCT, DWT) combined with secret keys so that the encrypted image is visually unintelligible and statistically uncorrelated with the original — yet perfectly recoverable with the correct key.
 
-The application serves both as a **practical tool** (encrypt/decrypt real images, save/load ciphertexts and keys as PNG files) and as an **educational demo** (step-by-step visualisation of each stage, side-by-side scheme comparison, and key-sensitivity analysis).
+The application serves both as a **practical tool** (encrypt/decrypt real images, save/load ciphertexts and keys as PNG files) and as an **educational demo** (step-by-step visualisation of each stage and side-by-side scheme comparison).
 
 ## Encryption Schemes
 
@@ -37,7 +37,6 @@ The application serves both as a **practical tool** (encrypt/decrypt real images
 - Save and load DRPE phase keys as PNG.
 - **Step-by-step viewer** for both encryption and decryption pipelines.
 - **Scheme comparison table** (MSE, PSNR, entropy, correlation, runtime).
-- **Key-sensitivity demo** — decrypt with a deliberately wrong key to see the avalanche effect.
 - Dark / light theme toggle.
 
 ## Requirements
@@ -78,7 +77,6 @@ Image Encryptor/
 ├── ui/
 │   ├── main_window.py       # Main application window
 │   ├── key_dialog.py        # Phase-key generation / save / load dialog
-│   ├── key_sensitivity_dialog.py  # Wrong-key decryption demo
 │   ├── comparison_dialog.py # Side-by-side scheme metrics table
 │   ├── steps_dialog.py      # Step-by-step intermediate image viewer
 │   ├── processing_dialog.py # "How it works" DRPE pipeline diagram
