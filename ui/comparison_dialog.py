@@ -12,9 +12,10 @@ from comparison_metrics import summarize
 class ComparisonDialog(QDialog):
     """Run both schemes on the same image and show a metrics table."""
 
-    def __init__(self, image, key1=None, key2=None, dwt_key="image-encryptor-dwt", parent=None):
+    def __init__(self, image, key1=None, key2=None, dwt_key="image-encryptor-dwt", arnold_key="image-encryptor", parent=None):
         super().__init__(parent)
-        self.image, self.key1, self.key2, self.dwt_key = image, key1, key2, dwt_key
+        self.image, self.key1, self.key2 = image, key1, key2
+        self.dwt_key, self.arnold_key = dwt_key, arnold_key
         self.setWindowTitle("Scheme comparison")
         self.resize(760, 520)
         layout = QVBoxLayout(self)
@@ -45,8 +46,8 @@ class ComparisonDialog(QDialog):
         drpe_plain = decrypt_drpe(drpe_cipher, key1, key2)
         drpe = summarize(self.image, drpe_cipher, drpe_plain, time.perf_counter() - started)
         started = time.perf_counter()
-        arnold_cipher, metadata = encrypt_arnold(self.image)
-        arnold_plain = decrypt_arnold(arnold_cipher, metadata)
+        arnold_cipher, metadata = encrypt_arnold(self.image, diffusion_key=self.arnold_key)
+        arnold_plain = decrypt_arnold(arnold_cipher, metadata, diffusion_key=self.arnold_key)
         arnold = summarize(self.image, arnold_cipher, arnold_plain, time.perf_counter() - started)
         started = time.perf_counter()
         dwt_cipher = encrypt_dwt(self.image, self.dwt_key)
