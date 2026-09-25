@@ -16,7 +16,7 @@ from image_handler import ContinuousImage
 
 from crypto import encrypt, decrypt, save_cipher, load_cipher
 from arnold_dct import encrypt as encrypt_arnold, decrypt as decrypt_arnold, encryption_steps, decryption_steps, save_cipher_png, load_cipher_png
-from dwt_chaotic import encrypt as encrypt_dwt, decrypt as decrypt_dwt, save_cipher as save_dwt_cipher, load_cipher as load_dwt_cipher
+from dwt_chaotic import encrypt as encrypt_dwt, decrypt as decrypt_dwt, encryption_steps as dwt_encryption_steps, save_cipher as save_dwt_cipher, load_cipher as load_dwt_cipher
 from PySide6.QtGui import QImage, QPixmap
 from PIL import Image
 import numpy as np
@@ -226,7 +226,6 @@ class MainWindow(QMainWindow):
             description.setObjectName("appSubtitle")
             description.setWordWrap(True)
             description.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-            # Equal side widths keep the button centered beneath its preview.
             footer.addWidget(description, 1)
             footer.addWidget(button, 0, Qt.AlignVCenter)
             footer.addWidget(step_button, 0, Qt.AlignVCenter)
@@ -275,10 +274,16 @@ class MainWindow(QMainWindow):
             self.clear_recovered()
 
     def open_comparison_dialog(self):
-        if self.original_image is None or self.key1 is None or self.key2 is None:
-            QMessageBox.warning(self, "Cannot compare", "Load an image and generate keys first.")
+        if self.original_image is None:
+            QMessageBox.warning(self, "Cannot compare", "Load an image first.")
             return
-        ComparisonDialog(self.original_image.image, self.key1, self.key2, self).exec()
+        ComparisonDialog(
+            self.original_image.image,
+            self.key1,
+            self.key2,
+            self.dwt_key,
+            self,
+        ).exec()
 
     def open_key_sensitivity_dialog(self):
         if self.scheme == "dwt":
@@ -524,15 +529,7 @@ class MainWindow(QMainWindow):
                 self.original_image.image, diffusion_key=self.arnold_diffusion_key
             )
         elif self.scheme == "dwt":
-            image = self.original_image.image
-            ll1, lh1, hl1, hh1 = encrypt_dwt.__globals__["haar_dwt2"](image)
-            ll2, lh2, hl2, hh2 = encrypt_dwt.__globals__["haar_dwt2"](ll1)
-            steps = [
-                ("Original", image),
-                ("LL1 / LH1 / HL1 / HH1", np.concatenate([ll1, lh1], axis=1)),
-                ("Level-2 LL2 / LH2 / HL2 / HH2", np.concatenate([ll2, lh2], axis=1)),
-                ("Encrypted image", np.abs(self.encrypted_image if self.encrypted_image is not None else encrypt_dwt(image, self.dwt_key))),
-            ]
+            steps = dwt_encryption_steps(self.original_image.image, self.dwt_key)
         else:
             cipher = self.encrypted_image if self.encrypted_image is not None else encrypt(self.original_image.image, self.key1, self.key2)
             masked = self.original_image.image * (self.key1[..., None] if self.original_image.image.ndim == 3 else self.key1)

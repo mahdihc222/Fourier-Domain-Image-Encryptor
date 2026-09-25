@@ -22,5 +22,8 @@ def summarize(original, encrypted, decrypted, runtime):
     error = float(np.mean((source - recovered) ** 2))
     psnr = float("inf") if error == 0 else float(10 * np.log10(1.0 / error))
     source_flat, encrypted_flat = source.ravel(), _real(encrypted).ravel()
-    correlation = 0.0 if np.std(encrypted_flat) == 0 else float(np.corrcoef(source_flat, encrypted_flat)[0, 1])
+    if source_flat.size != encrypted_flat.size or np.std(source_flat) == 0 or np.std(encrypted_flat) == 0:
+        correlation = 0.0
+    else:
+        correlation = float(np.corrcoef(source_flat, encrypted_flat)[0, 1])
     return {"MSE": error, "PSNR (dB)": psnr, "Entropy (bits/pixel)": entropy(encrypted), "Correlation": correlation, "Runtime (ms)": runtime * 1000}

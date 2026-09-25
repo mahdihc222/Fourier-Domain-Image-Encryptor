@@ -102,6 +102,51 @@ def encrypt(image, key):
     )
 
 
+def encryption_steps(image, key):
+    """Return the actual intermediate arrays used by :func:`encrypt`."""
+    image_array = _validate_image_array(image)
+    padded = _pad_to_even(image_array)
+
+    ll1, lh1, hl1, hh1 = haar_dwt2(padded)
+    ll1_even = _pad_to_even(ll1)
+    ll2, lh2, hl2, hh2 = haar_dwt2(ll1_even)
+
+    coeffs = _pack_coefficients(ll2, lh2, hl2, hh2, lh1, hl1, hh1)
+    permutation = _logistic_permutation(coeffs.size, key, "dwt-coefficients")
+    permuted = coeffs[permutation]
+    coefficient_low = float(np.min(permuted))
+    coefficient_high = float(np.max(permuted))
+    if coefficient_high == coefficient_low:
+        coefficient_high = coefficient_low + 1.0
+    normalized = np.clip(
+        (permuted - coefficient_low) / (coefficient_high - coefficient_low),
+        0.0,
+        1.0,
+    )
+    encoded = _encode_rgb_coefficients(normalized)
+    rows, columns = _cipher_shape(encoded.size, padded.shape[0], channels=3)
+    ciphertext = np.zeros((rows, columns, 3), dtype=np.float64)
+    ciphertext.reshape(-1)[: encoded.size] = encoded.reshape(-1)
+
+    def band_montage(ll, lh, hl, hh):
+        return np.concatenate(
+            [
+                np.concatenate([ll, lh], axis=1),
+                np.concatenate([hl, hh], axis=1),
+            ],
+            axis=0,
+        )
+
+    return [
+        ("Original", image_array),
+        ("Level-1 Haar DWT: LL / LH / HL / HH", band_montage(ll1, lh1, hl1, hh1)),
+        ("Level-2 Haar DWT of LL1: LL / LH / HL / HH", band_montage(ll2, lh2, hl2, hh2)),
+        ("Packed coefficients", np.abs(coeffs).reshape(1, -1)),
+        ("Logistic permutation and normalization", normalized.reshape(1, -1)),
+        ("24-bit RGB encoded ciphertext", ciphertext),
+    ]
+
+
 def decrypt(ciphertext, key):
     array = np.asarray(ciphertext, dtype=np.float64)
     metadata = getattr(ciphertext, "metadata", {}) if hasattr(ciphertext, "metadata") else {}
@@ -220,13 +265,13 @@ def _pad_to_even(array):
 
 
 def _cipher_shape(coefficient_count, height, channels=1):
-    """Return a 2D canvas shape that holds all encrypted coefficients."""
     rows = max(1, int(height))
     columns = max(1, int(np.ceil(coefficient_count / (rows * channels))))
     return rows, columns
 
 
 def _encode_rgb_coefficients(values):
+    #np.rint rounds to nearest integer, 16777215 = 2^24-1, this line converts normalized float into 24 bit int
     quantized = np.rint(np.clip(values, 0.0, 1.0) * 16777215.0).astype(np.uint32)
     return np.column_stack(
         (
@@ -269,7 +314,6 @@ def _haar_dwt_channel(channel):
 
 
 def _haar_idwt_channel(ll, lh, hl, hh):
-    """Invert a single-channel Haar DWT using the correct separable inverse pair equations."""
     low = np.empty((ll.shape[0] * 2, ll.shape[1]), dtype=np.float64)
     high = np.empty((hl.shape[0] * 2, hl.shape[1]), dtype=np.float64)
 
@@ -325,22 +369,3 @@ def _unpack_coefficients(flat, shapes):
         outputs.append(flat[index:index + count].reshape(shape))
         index += count
     return tuple(outputs)
-
-
-def _permute_subband(subband, key, salt):
-    subband = np.asarray(subband, dtype=np.float64)
-    flatten = subband.reshape(-1)
-    if flatten.size == 0:
-        return subband.copy()
-    permutation = np.argsort(_logistic_sequence(flatten.size, key, salt))
-    return flatten[permutation].reshape(subband.shape)
-
-
-def _inverse_permute_subband(subband, key, salt):
-    subband = np.asarray(subband, dtype=np.float64)
-    flatten = subband.reshape(-1)
-    if flatten.size == 0:
-        return subband.copy()
-    permutation = np.argsort(_logistic_sequence(flatten.size, key, salt))
-    inverse = np.argsort(permutation)
-    return flatten[inverse].reshape(subband.shape)
